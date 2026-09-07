@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>UNICC Cyber AI Gateway</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div id="app">
+        <!-- Login Screen -->
+        <div id="login-view" class="view active">
+            <div class="glass-panel login-panel">
+                <div class="logo">UNICC Cyber AI</div>
+                <h1>Welcome Back</h1>
+                <p>Sign in to access the investigation gateway.</p>
+                <form id="login-form">
+                    <div class="input-group">
+                        <label for="username">Username</label>
+                        <input type="text" id="username" required autocomplete="username">
+                    </div>
+                    <div class="input-group">
+                        <label for="password">Password</label>
+                        <input type="password" id="password" required autocomplete="current-password">
+                    </div>
+                    <button type="submit" class="btn primary-btn">Authenticate</button>
+                    <div id="login-error" class="error-msg"></div>
+                </form>
+            </div>
+        </div>
+
+        <!-- Dashboard Screen -->
+        <div id="dashboard-view" class="view">
+            <nav class="navbar glass-nav">
+                <div class="logo">UNICC Cyber AI</div>
+                <div class="nav-links">
+                    <button class="nav-tab active" data-target="investigate-tab">Investigate</button>
+                    <button class="nav-tab admin-only auditor-only" data-target="audit-tab" style="display:none;">Audit Logs</button>
+                    <button class="nav-tab admin-only" data-target="admin-tab" style="display:none;">System Config</button>
+                </div>
+                <div class="user-controls">
+                    <span id="user-role-badge" class="badge">Role</span>
+                    <button id="logout-btn" class="btn outline-btn small-btn">Logout</button>
+                </div>
+            </nav>
+
+            <div class="main-content">
+                <!-- Investigate Tab -->
+                <div id="investigate-tab" class="tab-content active">
+                    <div class="workflow-container">
+                        <div class="workflow-step glass-panel" id="step-1">
+                            <h2>1. Ingest Report</h2>
+                            <textarea id="report-input" placeholder="Paste intelligence report here..." rows="6"></textarea>
+                            <button id="analyze-btn" class="btn primary-btn">Analyze & Extract Entities</button>
+                        </div>
+                        
+                        <div class="workflow-step glass-panel disabled" id="step-2">
+                            <h2>2. Extracted Entities & Threat Matching</h2>
+                            <div class="entities-display" id="entities-display">
+                                <!-- Populated dynamically -->
+                                <p class="placeholder-text">Waiting for extraction...</p>
+                            </div>
+                            <button id="threat-match-btn" class="btn secondary-btn" disabled>Run Threat Matching</button>
+                            <div id="threats-display" class="threats-display mt-3"></div>
+                            <button id="summarize-btn" class="btn primary-btn mt-3" disabled>Synthesize Summary</button>
+                        </div>
+
+                        <div class="workflow-step glass-panel disabled" id="step-3">
+                            <h2>3. Final Synthesis & Decision</h2>
+                            <div id="summary-display" class="summary-display">
+                                <p class="placeholder-text">Waiting for synthesis...</p>
+                            </div>
+                            <div class="decision-box mt-4">
+                                <label>Investigator Decision</label>
+                                <select id="decision-select">
+                                    <option value="escalate">Escalate Incident</option>
+                                    <option value="monitor">Monitor Only</option>
+                                    <option value="dismiss">Dismiss (False Positive)</option>
+                                </select>
+                                <textarea id="decision-notes" placeholder="Notes..."></textarea>
+                                <button id="submit-decision-btn" class="btn primary-btn">Submit Decision</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Audit Logs Tab -->
+                <div id="audit-tab" class="tab-content">
+                    <div class="glass-panel">
+                        <h2>Audit Logs</h2>
+                        <button id="refresh-audit-btn" class="btn secondary-btn small-btn mb-3">Refresh</button>
+                        <div class="table-container">
+                            <table id="audit-table">
+                                <thead>
+                                    <tr>
+                                        <th>Timestamp</th>
+                                        <th>User</th>
+                                        <th>Role</th>
+                                        <th>Action</th>
+                                        <th>Backend</th>
+                                        <th>Outcome</th>
+                                        <th>Details</th>
+                                    </tr>
+                                </thead>
+                                <tbody></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Admin Tab -->
+                <div id="admin-tab" class="tab-content">
+                    <div class="glass-panel">
+                        <h2>System Configuration</h2>
+                        <div class="config-group">
+                            <label>LLM Backend</label>
+                            <select id="llm-backend-select">
+                                <option value="gemini">Google Gemini (Cloud)</option>
+                                <option value="ollama">Ollama (On-Premise)</option>
+                            </select>
+                            <button id="save-config-btn" class="btn primary-btn mt-2">Save Configuration</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div id="toast-container"></div>
+
+    <script src="app.js"></script>
+</body>
+</html>
