@@ -182,7 +182,17 @@ document.addEventListener("DOMContentLoaded", () => {
                 showToast("Synthesis complete", "success");
             } else {
                 const err = await res.json();
-                showToast(err.detail || "Synthesis failed", "error");
+                const message = err.detail || "Synthesis failed";
+                // textContent (not innerHTML) so the error text is shown as plain text
+                const box = document.getElementById("summary-display");
+                box.innerHTML = "";
+                const title = document.createElement("strong");
+                title.textContent = "Summary could not be generated:";
+                const reason = document.createElement("p");
+                reason.textContent = message;
+                box.append(title, reason);
+                document.getElementById("step-3").classList.remove("disabled");
+                showToast(message, "error");
             }
         } catch (e) {
             showToast("Network error", "error");

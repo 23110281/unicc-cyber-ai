@@ -92,6 +92,9 @@ class GeminiGateway(LLMInterface):
         self.url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent"
         
     def _call(self, prompt: str, config: dict = None) -> str:
+        if not self.api_key:
+            raise LLMGatewayError("Gemini API key is not set (GEMINI_API_KEY), so the AI model could not be reached.")
+
         config = config or {}
         timeout = config.get("timeout", 60)
         max_retries = config.get("max_retries", 3)
@@ -151,18 +154,14 @@ class GeminiGateway(LLMInterface):
         if not text.strip():
             raise LLMGatewayError("Empty input provided for summarization.")
             
-        try:
-            raw_text = self._call(f"Summarize this report and provide bullet points:\n{text}", config)
-            return {
-                "summary": raw_text.strip(), 
-                "key_points": self._parse_key_points(raw_text)
-            }
-        except Exception as e:
-            print(f"INFO: API failed during summarize_report, falling back to mock: {e}")
-            return {
-                "summary": "Mock Summary: The provided report outlines a suspected ransomware incident involving Cobalt Strike and lateral movement.",
-                "key_points": ["Anomalous outbound traffic detected", "Cobalt Strike payload delivered via phishing", "CVE-2023-23397 exploited", "Possible ransomware pre-deployment reconnaissance"]
-            }
+        # If the AI call fails, the error is passed on to the caller.
+        # We never replace a failed answer with a made-up one: an investigator
+        # must be able to tell "the AI said X" apart from "the AI didn't answer".
+        raw_text = self._call(f"Summarize this report and provide bullet points:\n{text}", config)
+        return {
+            "summary": raw_text.strip(),
+            "key_points": self._parse_key_points(raw_text)
+        }
         
     def extract_entities(self, text: str, config: dict = None) -> dict:
         # Find indicators that are actually written in the text (never invented).

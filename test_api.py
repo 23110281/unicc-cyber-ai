@@ -113,17 +113,51 @@ def test_entities_extraction_success():
     data = res2.json()
     assert "iocs" in data
 
+class _FakeWorkingGateway:
+    """Stands in for the AI model so tests don't need the internet or an API key."""
+    def summarize_report(self, text, config=None):
+        return {"summary": "Test summary.", "key_points": ["- point one"]}
+
+
+class _FakeBrokenGateway:
+    """Stands in for an AI model that fails (no key, network down, quota used up...)."""
+    def summarize_report(self, text, config=None):
+        from llm.gateway.interface import LLMGatewayError
+        raise LLMGatewayError("model unavailable")
+
+
+def _summarize_with(gateway):
+    from backend.api.main import get_llm_gateway
+    app.dependency_overrides[get_llm_gateway] = lambda: (gateway, "test")
+    try:
+        res = client.post("/api/v1/auth/login", json={"username": "test_inv", "password": "testpass"})
+        token = res.cookies.get("access_token")
+        payload = {"evidence": "This is a test report about ransomware.", "correlation_id": "test-corr-id"}
+        return client.post("/api/v1/llm/summarize", json=payload, cookies={"access_token": token})
+    finally:
+        del app.dependency_overrides[get_llm_gateway]
+
+
 def test_summarize_success():
-    # Login as investigator
-    res = client.post("/api/v1/auth/login", json={"username": "test_inv", "password": "testpass"})
-    token = res.cookies.get("access_token")
-    
-    # Test summarize endpoint
-    payload = {
-        "evidence": "This is a test report about ransomware.",
-        "correlation_id": "test-corr-id"
-    }
-    res2 = client.post("/api/v1/llm/summarize", json=payload, cookies={"access_token": token})
-    print("Summarize response:", res2.json())
-    assert res2.status_code == 200
+    res = _summarize_with(_FakeWorkingGateway())
+    assert res.status_code == 200
+    assert res.json()["summary"] == "Test summary."
+
+
+def test_summarize_failure_is_reported_not_faked():
+    # The bug this guards against: when the AI failed, the app used to answer
+    # "200 OK" with a made-up ransomware summary.
+    res = _summarize_with(_FakeBrokenGateway())
+    assert res.status_code == 502
+    assert "Mock" not in res.text
+    assert "ransomware incident" not in res.text
+
+
+def test_gemini_without_api_key_fails_clearly(monkeypatch):
+    from llm.gateway.adapters import GeminiGateway
+    from llm.gateway.interface import LLMGatewayError
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    gateway = GeminiGateway()
+    with pytest.raises(LLMGatewayError, match="API key is not set"):
+        gateway.summarize_report("some report text")
 
