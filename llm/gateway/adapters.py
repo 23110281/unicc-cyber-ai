@@ -3,6 +3,7 @@ import requests
 import json
 import time
 from .interface import LLMInterface, LLMTimeoutError, LLMGatewayError
+from .ioc_extractor import extract_iocs
 
 class OllamaGateway(LLMInterface):
     def __init__(self, host="http://localhost:11434", model="tinyllama"):
@@ -76,17 +77,8 @@ class OllamaGateway(LLMInterface):
         }
         
     def extract_entities(self, text: str, config: dict = None) -> dict:
-        raw_text = self._call(f"Extract IOCs from this text:\n{text}", config)
-        return {
-            "iocs": [
-                "CVE-2023-1234",
-                "192.168.1.100",
-                "malicious.com",
-                "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-                "RansomwareX",
-                "Lazarus Group"
-            ]
-        }
+        # Find indicators that are actually written in the text (never invented).
+        return extract_iocs(text)
         
     def investigate_synthesis(self, query: str, retrieved_evidence: list, config: dict = None) -> dict:
         ev_text = json.dumps(retrieved_evidence)
@@ -173,25 +165,8 @@ class GeminiGateway(LLMInterface):
             }
         
     def extract_entities(self, text: str, config: dict = None) -> dict:
-        try:
-            raw_text = self._call(f"Extract IOCs from this text:\n{text}", config)
-        except Exception as e:
-            print(f"INFO: API failed during extract_entities, falling back to mock: {e}")
-            
-        return {
-            "iocs": [
-                "CVE-2023-23397",
-                "10.14.6.23",
-                "secure-update-cdn[.]net",
-                "185.220.101.47",
-                "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b85",
-                "10.14.0.5",
-                "FIN12",
-                "45.134.26.201",
-                "IcedID",
-                "Cobalt Strike"
-            ]
-        }
+        # Find indicators that are actually written in the text (never invented).
+        return extract_iocs(text)
         
     def investigate_synthesis(self, query: str, retrieved_evidence: list, config: dict = None) -> dict:
         ev_text = json.dumps(retrieved_evidence)

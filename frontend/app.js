@@ -98,9 +98,14 @@ document.addEventListener("DOMContentLoaded", () => {
                 const entitiesData = await res.json();
                 extractedEntities = entitiesData.iocs;
                 
-                let html = `<strong>Extracted IOCs:</strong><ul>`;
-                entitiesData.iocs.forEach(ioc => html += `<li>${ioc}</li>`);
-                html += `</ul>`;
+                let html = `<strong>Extracted IOCs:</strong>`;
+                if (entitiesData.iocs.length === 0) {
+                    html += `<p class="placeholder-text">No indicators (CVEs, IPs, domains, hashes) found in this report.</p>`;
+                } else {
+                    html += `<ul>`;
+                    entitiesData.iocs.forEach(ioc => html += `<li>${ioc}</li>`);
+                    html += `</ul>`;
+                }
                 
                 document.getElementById("entities-display").innerHTML = html;
                 document.getElementById("step-2").classList.remove("disabled");
