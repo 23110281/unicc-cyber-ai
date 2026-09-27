@@ -295,3 +295,27 @@ def test_new_passwords_must_follow_the_rules():
     db.close()
     res = client.post("/api/v1/auth/login", json={"username": "test_admin", "password": "a-long-enough-password"})
     assert res.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# Other websites may not call the API (CORS)
+# ---------------------------------------------------------------------------
+def test_other_websites_are_not_allowed_to_call_the_api():
+    # The bug this guards against: the app told browsers that ANY website could
+    # call it with the logged-in user's pass.
+    res = client.get("/api/v1/admin/config", headers={"Origin": "https://evil.example"})
+    assert "access-control-allow-origin" not in res.headers
+    preflight = client.options(
+        "/api/v1/investigation/entities",
+        headers={"Origin": "https://evil.example", "Access-Control-Request-Method": "POST"},
+    )
+    assert "access-control-allow-origin" not in preflight.headers
+
+
+def test_allowing_every_website_cannot_be_configured(monkeypatch):
+    from backend.api.main import _load_allowed_origins
+    monkeypatch.setenv("ALLOWED_ORIGINS", "*")
+    with pytest.raises(RuntimeError):
+        _load_allowed_origins()
+    monkeypatch.setenv("ALLOWED_ORIGINS", "https://dashboard.example.org, https://other.example.org")
+    assert _load_allowed_origins() == ["https://dashboard.example.org", "https://other.example.org"]

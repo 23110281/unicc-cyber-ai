@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 import uuid
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Depends, HTTPException, status, Response, Request
@@ -46,13 +47,26 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="UNICC Cyber AI Gateway", lifespan=lifespan)
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# Which OTHER websites may call this API from a user's browser (CORS).
+# The dashboard is served by this same app, so it needs no permission, and by
+# default NO other website is allowed. If the dashboard is ever hosted at a
+# different address, list that address in ALLOWED_ORIGINS, e.g.
+#     ALLOWED_ORIGINS=https://dashboard.example.org
+def _load_allowed_origins() -> List[str]:
+    origins = [o.strip() for o in os.environ.get("ALLOWED_ORIGINS", "").split(",") if o.strip()]
+    if "*" in origins:
+        raise RuntimeError("ALLOWED_ORIGINS must list specific addresses, not '*' (that would allow every website).")
+    return origins
+
+_allowed_origins = _load_allowed_origins()
+if _allowed_origins:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=_allowed_origins,
+        allow_credentials=True,
+        allow_methods=["GET", "POST"],
+        allow_headers=["Content-Type"],
+    )
 
 # Exception handlers for Custom Auth errors
 @app.exception_handler(UnauthorizedError)
