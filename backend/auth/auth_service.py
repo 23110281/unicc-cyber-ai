@@ -5,14 +5,49 @@ Handles JWT creation, httpOnly cookies, and defines an abstract IdentityProvider
 from abc import ABC, abstractmethod
 from typing import Optional, Dict, List
 from datetime import datetime, timedelta
+import logging
 import os
+import secrets
 import jwt
 import bcrypt
 from sqlalchemy.orm import Session
 from backend.models import User
 
-# Load secure 32+ byte secret from environment or use a secure fallback
-JWT_SECRET = os.environ.get("JWT_SECRET", "super-secret-dev-key-that-is-at-least-32-bytes-long!")
+# Secrets that were once written in this project's public code. Anyone can read
+# them on GitHub, so they must never be accepted as the real key.
+_KNOWN_PUBLIC_SECRETS = {"super-secret-dev-key-that-is-at-least-32-bytes-long!"}
+
+
+def _load_jwt_secret() -> str:
+    """
+    Return the key used to sign login passes (JWTs).
+
+    Anyone who knows this key can create a pass for any user with any role,
+    including admin. So it must never be written in the code.
+
+    - If the JWT_SECRET environment variable is set, it is used. It must be at
+      least 32 characters and must not be one of the old public values.
+    - If it is not set, a random key is created for this run only. That is safe,
+      but everyone is logged out whenever the server restarts.
+      Real deployments must always set JWT_SECRET.
+    """
+    secret = os.environ.get("JWT_SECRET", "")
+    if secret:
+        if secret in _KNOWN_PUBLIC_SECRETS:
+            raise RuntimeError("JWT_SECRET is set to a value that is published in the project's code. Choose a new random value.")
+        if len(secret) < 32:
+            raise RuntimeError("JWT_SECRET must be at least 32 characters long.")
+        return secret
+
+    logging.getLogger("uvicorn.error").warning(
+        "JWT_SECRET is not set: using a temporary random key. "
+        "Everyone will be logged out when the server restarts. "
+        "Set JWT_SECRET for real deployments."
+    )
+    return secrets.token_urlsafe(48)
+
+
+JWT_SECRET = _load_jwt_secret()
 JWT_ALGORITHM = "HS256"
 TOKEN_EXPIRE_MINUTES = 60
 

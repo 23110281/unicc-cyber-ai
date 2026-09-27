@@ -175,3 +175,45 @@ def test_threat_matching_does_not_invent_matches():
     assert data["matches"] == []
     assert data["status"] == "unavailable"
     assert "APT29" not in res2.text
+
+
+# ---------------------------------------------------------------------------
+# Login-pass (JWT) signing key
+# ---------------------------------------------------------------------------
+OLD_PUBLIC_SECRET = "super-secret-dev-key-that-is-at-least-32-bytes-long!"
+
+
+def test_forged_admin_pass_with_old_public_secret_is_rejected():
+    # The bug this guards against: anyone could make themselves admin by signing
+    # a pass with the secret that used to be written in the public code.
+    import datetime
+    import jwt
+    forged = jwt.encode(
+        {"id": "x", "username": "attacker", "role": "admin",
+         "exp": datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=1)},
+        OLD_PUBLIC_SECRET, algorithm="HS256",
+    )
+    res = client.get("/api/v1/admin/config", cookies={"access_token": forged})
+    assert res.status_code == 401
+
+
+def test_old_public_secret_cannot_be_configured(monkeypatch):
+    from backend.auth.auth_service import _load_jwt_secret
+    monkeypatch.setenv("JWT_SECRET", OLD_PUBLIC_SECRET)
+    with pytest.raises(RuntimeError):
+        _load_jwt_secret()
+
+
+def test_short_secret_is_refused(monkeypatch):
+    from backend.auth.auth_service import _load_jwt_secret
+    monkeypatch.setenv("JWT_SECRET", "too-short")
+    with pytest.raises(RuntimeError):
+        _load_jwt_secret()
+
+
+def test_without_secret_a_random_one_is_used(monkeypatch):
+    from backend.auth.auth_service import _load_jwt_secret
+    monkeypatch.delenv("JWT_SECRET", raising=False)
+    first, second = _load_jwt_secret(), _load_jwt_secret()
+    assert first != second
+    assert len(first) >= 32
