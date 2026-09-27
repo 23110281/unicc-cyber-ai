@@ -161,3 +161,17 @@ def test_gemini_without_api_key_fails_clearly(monkeypatch):
     with pytest.raises(LLMGatewayError, match="API key is not set"):
         gateway.summarize_report("some report text")
 
+
+
+def test_threat_matching_does_not_invent_matches():
+    # The bug this guards against: the app used to show "APT29" and "Cobalt Strike"
+    # as matches for any input, even a lunch menu.
+    res = client.post("/api/v1/auth/login", json={"username": "test_inv", "password": "testpass"})
+    token = res.cookies.get("access_token")
+    payload = {"entities": [], "correlation_id": "test-corr-id"}
+    res2 = client.post("/api/v1/investigation/threats", json=payload, cookies={"access_token": token})
+    assert res2.status_code == 200
+    data = res2.json()
+    assert data["matches"] == []
+    assert data["status"] == "unavailable"
+    assert "APT29" not in res2.text

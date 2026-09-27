@@ -138,11 +138,29 @@ document.addEventListener("DOMContentLoaded", () => {
 
             if (res.ok) {
                 const data = await res.json();
-                let html = `<strong>Threat Matches:</strong><ul>`;
-                data.matches.forEach(m => html += `<li>${m.threat} (Confidence: ${m.confidence}) - ${m.mitre_tactics.join(', ')}</li>`);
-                html += `</ul>`;
-                
-                document.getElementById("threats-display").innerHTML = html;
+                // Built with textContent (not innerHTML) so text from the server is
+                // always shown as plain text and can never run as code in the page.
+                const box = document.getElementById("threats-display");
+                box.innerHTML = "";
+                const title = document.createElement("strong");
+                title.textContent = "Threat Matches:";
+                box.appendChild(title);
+
+                if (data.status === "unavailable" || data.matches.length === 0) {
+                    const note = document.createElement("p");
+                    note.className = "placeholder-text";
+                    note.textContent = data.message || "No matches found.";
+                    box.appendChild(note);
+                } else {
+                    const list = document.createElement("ul");
+                    data.matches.forEach(m => {
+                        const item = document.createElement("li");
+                        const tactics = (m.mitre_tactics || []).join(", ");
+                        item.textContent = `${m.threat} (Confidence: ${m.confidence})` + (tactics ? ` - ${tactics}` : "");
+                        list.appendChild(item);
+                    });
+                    box.appendChild(list);
+                }
                 document.getElementById("summarize-btn").disabled = false;
                 showToast("Threat matching complete", "success");
             } else {

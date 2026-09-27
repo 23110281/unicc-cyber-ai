@@ -186,16 +186,19 @@ def extract_entities(req: EntitiesRequest, user: dict = Depends(get_investigator
         log_action(db, req.correlation_id, user["id"], user["role"], "extract_entities", "doc_current", backend_name, "failure", {"error": str(e)})
         raise HTTPException(status_code=502, detail=str(e))
 
+THREAT_MATCHING_UNAVAILABLE = (
+    "Threat matching is not connected yet. It needs the historical-threat search "
+    "(retrieval) service from Team 2. No matches are shown rather than invented ones."
+)
+
 @app.post("/api/v1/investigation/threats")
 def get_threat_matches(req: ThreatsRequest, user: dict = Depends(get_investigator_user), db: Session = Depends(get_db)):
-    # Mock matching logic since this relies on Team 2's retrieval layer which isn't wired yet.
-    # Updated to meet demo smoke test structural assertions
-    matches = [
-        {"threat": "APT29", "confidence": 0.95, "mitre_tactics": ["Initial Access"], "match_category": "strong", "synthesized": True},
-        {"threat": "Cobalt Strike", "confidence": 85, "mitre_tactics": ["Execution"], "match_category": "exact", "synthesized": True}
-    ]
-    log_action(db, req.correlation_id, user["id"], user["role"], "threat_match", "doc_current", "none", "success")
-    return {"matches": matches}
+    # Matching new indicators against historical threats needs Team 2's retrieval
+    # service, which is not wired in yet. Until it is, we say so plainly and return
+    # no matches. We never return made-up matches: an investigator could act on them.
+    log_action(db, req.correlation_id, user["id"], user["role"], "threat_match", "doc_current", "none",
+               "unavailable", {"reason": "retrieval service not connected"})
+    return {"matches": [], "status": "unavailable", "message": THREAT_MATCHING_UNAVAILABLE}
 
 @app.post("/api/v1/llm/summarize")
 def summarize_investigation(req: SummarizeRequest, user: dict = Depends(get_investigator_user), 
