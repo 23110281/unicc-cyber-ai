@@ -217,3 +217,31 @@ def test_without_secret_a_random_one_is_used(monkeypatch):
     first, second = _load_jwt_secret(), _load_jwt_secret()
     assert first != second
     assert len(first) >= 32
+
+
+# ---------------------------------------------------------------------------
+# Checks moved here from the old test_unit.py (which tested an older version
+# of the code and could no longer run).
+# ---------------------------------------------------------------------------
+def test_audit_log_never_stores_secrets():
+    # Anything whose name contains "key" or "secret" must be dropped before
+    # it is written to the audit log, so API keys can't leak into it.
+    import json
+    from backend.audit.audit_service import log_action
+    db = TestingSessionLocal()
+    entry = log_action(db, "corr-123", "u1", "investigator", "extract", "doc_1", "gemini", "success",
+                       {"gemini_api_key": "secret-12345", "jwt_secret": "abc", "normal_field": "safe_value"})
+    details = json.loads(entry.details)
+    assert "gemini_api_key" not in details
+    assert "jwt_secret" not in details
+    assert "secret-12345" not in entry.details
+    assert details["normal_field"] == "safe_value"
+    db.close()
+
+
+def test_garbage_or_missing_login_pass_is_rejected():
+    from backend.auth.auth_service import require_role, UnauthorizedError
+    with pytest.raises(UnauthorizedError):
+        require_role("not-a-real-token", ["admin"])
+    with pytest.raises(UnauthorizedError):
+        require_role("", ["admin"])
