@@ -1,4 +1,5 @@
 import json
+import logging
 import uuid
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Depends, HTTPException, status, Response, Request
@@ -12,9 +13,10 @@ from typing import List, Optional
 from backend.database import engine, Base, get_db
 from backend.models import User, SystemConfig
 from backend.auth.auth_service import (
-    DBUserStore, create_jwt_token, require_role, get_password_hash,
-    UnauthorizedError, ForbiddenError
+    DBUserStore, create_jwt_token, require_role,
+    UnauthorizedError, ForbiddenError, PUBLISHED_DEFAULT_PASSWORDS
 )
+from backend.manage_users import create_initial_accounts
 from backend.audit.audit_service import log_action, get_audit_logs
 from llm.gateway.adapters import GeminiGateway, OllamaGateway
 from llm.gateway.interface import LLMGatewayError, LLMTimeoutError
@@ -24,16 +26,17 @@ async def lifespan(app: FastAPI):
     # Create database tables
     Base.metadata.create_all(bind=engine)
     
-    # Seed initial data
+    # First start with an empty database: create the demo accounts with RANDOM
+    # passwords and show them once in this window. No password is written in the code.
     db = next(get_db())
-    if not db.query(User).first():
-        users = [
-            User(id="u1", username="admin_user", hashed_password=get_password_hash("adminpassword"), role="admin"),
-            User(id="u2", username="investigator_1", hashed_password=get_password_hash("invpassword"), role="investigator"),
-            User(id="u3", username="auditor_1", hashed_password=get_password_hash("audpassword"), role="auditor"),
-        ]
-        db.add_all(users)
-        
+    created = create_initial_accounts(db)
+    if created:
+        log = logging.getLogger("uvicorn.error")
+        log.warning("No user accounts existed, so these were created. The passwords are shown ONLY ONCE - write them down now:")
+        for username, role, password in created:
+            log.warning(f"    username: {username:<16} password: {password}   ({role})")
+        log.warning("To change a password later: python -m backend.manage_users reset-password <username>")
+
     if not db.query(SystemConfig).filter(SystemConfig.key == "llm_backend").first():
         db.add(SystemConfig(key="llm_backend", value="gemini"))
         
@@ -122,6 +125,13 @@ class ConfigUpdate(BaseModel):
 # --- Endpoints ---
 @app.post("/api/v1/auth/login")
 def login(req: LoginRequest, response: Response, db: Session = Depends(get_db)):
+    if req.password in PUBLISHED_DEFAULT_PASSWORDS:
+        # These were public in the project's code; an old database may still use them.
+        raise HTTPException(
+            status_code=401,
+            detail="This password was published in the project's code and is no longer accepted. "
+                   "An admin can set a new one with: python -m backend.manage_users reset-password <username>",
+        )
     store = DBUserStore(db)
     user = store.authenticate(req.username, req.password)
     if not user:

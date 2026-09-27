@@ -245,3 +245,53 @@ def test_garbage_or_missing_login_pass_is_rejected():
         require_role("not-a-real-token", ["admin"])
     with pytest.raises(UnauthorizedError):
         require_role("", ["admin"])
+
+
+# ---------------------------------------------------------------------------
+# No passwords written in the code
+# ---------------------------------------------------------------------------
+def test_published_default_passwords_are_refused_at_login():
+    # The bug this guards against: the demo accounts used passwords that were
+    # written in the public code. An old database may still contain them.
+    db = TestingSessionLocal()
+    db.add(User(id="old1", username="admin_user", hashed_password=get_password_hash("adminpassword"), role="admin"))
+    db.commit()
+    db.close()
+    res = client.post("/api/v1/auth/login", json={"username": "admin_user", "password": "adminpassword"})
+    assert res.status_code == 401
+    assert "access_token" not in res.cookies
+
+
+def test_first_start_creates_accounts_with_random_passwords():
+    from backend.manage_users import create_initial_accounts, PUBLISHED_DEFAULT_PASSWORDS
+    from backend.auth.auth_service import verify_password
+    db = TestingSessionLocal()
+    db.query(User).delete()
+    db.commit()
+    created = create_initial_accounts(db)
+    assert {role for _, role, _ in created} == {"admin", "investigator", "auditor"}
+    passwords = [password for _, _, password in created]
+    assert len(set(passwords)) == 3
+    for username, _, password in created:
+        assert password not in PUBLISHED_DEFAULT_PASSWORDS
+        assert len(password) >= 12
+        stored = db.query(User).filter(User.username == username).first()
+        assert stored.hashed_password != password          # never stored as plain text
+        assert verify_password(password, stored.hashed_password)
+    assert create_initial_accounts(db) == []             # not re-created on the next start
+    db.close()
+
+
+def test_new_passwords_must_follow_the_rules():
+    from backend.manage_users import add_user, reset_password
+    db = TestingSessionLocal()
+    with pytest.raises(ValueError):
+        reset_password(db, "test_admin", "short")
+    with pytest.raises(ValueError):
+        reset_password(db, "test_admin", "adminpassword")
+    with pytest.raises(ValueError):
+        add_user(db, "someone", "superuser", "a-long-enough-password")
+    reset_password(db, "test_admin", "a-long-enough-password")
+    db.close()
+    res = client.post("/api/v1/auth/login", json={"username": "test_admin", "password": "a-long-enough-password"})
+    assert res.status_code == 200

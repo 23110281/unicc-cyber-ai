@@ -18,6 +18,12 @@ from backend.models import User
 _KNOWN_PUBLIC_SECRETS = {"super-secret-dev-key-that-is-at-least-32-bytes-long!"}
 
 
+# Passwords that were once written in this project's public code for the demo
+# accounts. Anyone can read them on GitHub, so they are refused at login even if
+# an old database still contains them.
+PUBLISHED_DEFAULT_PASSWORDS = {"adminpassword", "invpassword", "audpassword"}
+
+
 def _load_jwt_secret() -> str:
     """
     Return the key used to sign login passes (JWTs).
