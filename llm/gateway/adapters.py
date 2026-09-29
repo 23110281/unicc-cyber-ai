@@ -1,14 +1,27 @@
 import os
+import re
 import requests
 import json
 import time
 from .interface import LLMInterface, LLMTimeoutError, LLMGatewayError
 from .ioc_extractor import extract_iocs
 
+# Model names go into a web address, so only simple names are accepted.
+_MODEL_NAME = re.compile(r"^[A-Za-z0-9._:-]{1,100}$")
+
+
+def _checked_model(name: str, setting: str) -> str:
+    if not _MODEL_NAME.match(name):
+        raise LLMGatewayError(f"Setting {setting} is not a valid model name.")
+    return name
+
+
 class OllamaGateway(LLMInterface):
-    def __init__(self, host="http://localhost:11434", model="tinyllama"):
-        self.host = host
-        self.model = model
+    """On-premise AI through Ollama. Settings: OLLAMA_HOST, OLLAMA_MODEL (see .env.example)."""
+
+    def __init__(self, host=None, model=None):
+        self.host = (host or os.environ.get("OLLAMA_HOST") or "http://localhost:11434").rstrip("/")
+        self.model = _checked_model(model or os.environ.get("OLLAMA_MODEL") or "tinyllama", "OLLAMA_MODEL")
         self.verify_model()
         
     def verify_model(self):
@@ -87,9 +100,12 @@ class OllamaGateway(LLMInterface):
 
 
 class GeminiGateway(LLMInterface):
+    """API-based AI through Google Gemini. Settings: GEMINI_API_KEY, GEMINI_MODEL (see .env.example)."""
+
     def __init__(self):
         self.api_key = os.environ.get("GEMINI_API_KEY", "")
-        self.url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent"
+        self.model = _checked_model(os.environ.get("GEMINI_MODEL") or "gemini-3.6-flash", "GEMINI_MODEL")
+        self.url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:generateContent"
         
     def _call(self, prompt: str, config: dict = None) -> str:
         if not self.api_key:

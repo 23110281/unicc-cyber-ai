@@ -10,6 +10,12 @@ Stops password guessing by counting FAILED logins over the last 15 minutes:
 
 A successful login clears that username's failures.
 
+Behind Docker or a proxy, every user may appear to come from the SAME address, so
+the per-computer limit could lock everyone out. Either let the server see real
+addresses (run uvicorn with --proxy-headers --forwarded-allow-ips=<proxy address>)
+or set LOGIN_MAX_FAILURES_PER_IP=0 to switch that check off. The per-username
+limit still protects every account.
+
 Limitation: the counts live in memory. They reset when the server restarts and
 are not shared between several server processes. That is fine for one server;
 running several would need a shared store (for example the database or Redis).
@@ -59,6 +65,8 @@ class LoginLimiter:
             waits = []
             for key, limit in ((self._user_key(username), self.max_failures_per_user),
                                (self._ip_key(ip), self.max_failures_per_ip)):
+                if limit <= 0:          # 0 = this check is switched off
+                    continue
                 failures = self._recent(key, now)
                 if len(failures) >= limit:
                     # Allowed again once enough old failures have left the window.

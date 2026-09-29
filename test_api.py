@@ -698,3 +698,15 @@ def test_dashboard_loads_nothing_from_the_internet():
     for path in ["/", "/style.css", "/app.js"]:
         body = client.get(path).text
         assert "https://" not in body and "http://" not in body, path
+
+
+# ---------------------------------------------------------------------------
+# Settings that affect logins
+# ---------------------------------------------------------------------------
+def test_secure_cookie_setting(monkeypatch):
+    monkeypatch.setenv("COOKIE_SECURE", "true")
+    cookie = [c for c in _login("test_inv", "testpass").headers.get_list("set-cookie") if "access_token" in c][0]
+    assert "Secure" in cookie
+    monkeypatch.setenv("COOKIE_SECURE", "false")
+    cookie = [c for c in _login("test_inv", "testpass").headers.get_list("set-cookie") if "access_token" in c][0]
+    assert "Secure" not in cookie

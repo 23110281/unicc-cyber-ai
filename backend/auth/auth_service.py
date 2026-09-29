@@ -11,6 +11,7 @@ import secrets
 import jwt
 from sqlalchemy.orm import Session
 from backend.models import User
+from backend.config import get_int
 from backend.auth.passwords import verify_password
 
 # Secrets that were once written in this project's public code. Anyone can read
@@ -49,7 +50,7 @@ def _load_jwt_secret() -> str:
 
 JWT_SECRET = _load_jwt_secret()
 JWT_ALGORITHM = "HS256"
-TOKEN_EXPIRE_MINUTES = 60
+TOKEN_EXPIRE_MINUTES = get_int("SESSION_MINUTES", 60)   # how long a login lasts
 
 class IdentityProvider(ABC):
     @abstractmethod

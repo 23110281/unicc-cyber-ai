@@ -1,8 +1,11 @@
-fastapi
-uvicorn
-sqlalchemy
-pyjwt
-bcrypt
-requests
-pytest
-httpx
+# Packages the app needs to run. Versions are pinned so every install gets exactly
+# what was tested. To upgrade: change a version here, reinstall, run the tests.
+fastapi==0.141.1
+starlette==1.7.0
+pydantic==2.13.5
+uvicorn==0.54.0
+sqlalchemy==2.1.1
+pyjwt==2.15.0
+bcrypt==5.0.0
+requests==2.34.2
+python-dotenv==1.2.3

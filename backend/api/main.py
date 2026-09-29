@@ -14,10 +14,11 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 from typing import List, Literal
 
+from backend.config import get_bool, get_int, get_str   # loads the .env file first
 from backend.database import engine, Base, get_db
 from backend.models import User, SystemConfig
 from backend.auth.auth_service import (
-    DBUserStore, create_jwt_token, require_role,
+    DBUserStore, create_jwt_token, require_role, TOKEN_EXPIRE_MINUTES,
     UnauthorizedError, ForbiddenError
 )
 from backend.auth.passwords import PUBLISHED_DEFAULT_PASSWORDS
@@ -46,11 +47,28 @@ async def lifespan(app: FastAPI):
         log.warning("To change a password later: python -m backend.manage_users reset-password <username>")
 
     if not db.query(SystemConfig).filter(SystemConfig.key == "llm_backend").first():
-        db.add(SystemConfig(key="llm_backend", value="gemini"))
+        # First start: which AI backend to use until an admin changes it in System Config.
+        first_backend = get_str("DEFAULT_LLM_BACKEND", "gemini")
+        if first_backend not in ("gemini", "ollama"):
+            raise RuntimeError("DEFAULT_LLM_BACKEND must be 'gemini' or 'ollama'.")
+        db.add(SystemConfig(key="llm_backend", value=first_backend))
         
     db.commit()
+    for warning in _settings_warnings(db):
+        logging.getLogger("uvicorn.error").warning(warning)
     db.close()
     yield
+
+
+def _settings_warnings(db: Session) -> List[str]:
+    """Settings that are fine for testing on this computer but not for real use."""
+    warnings = []
+    if not get_bool("COOKIE_SECURE", False):
+        warnings.append("COOKIE_SECURE is off: fine at http://127.0.0.1, but turn it on when the app is served over HTTPS.")
+    backend = db.query(SystemConfig).filter(SystemConfig.key == "llm_backend").first()
+    if backend and backend.value == "gemini" and not os.environ.get("GEMINI_API_KEY"):
+        warnings.append("GEMINI_API_KEY is not set: AI summaries will fail until it is set in .env (or switch to Ollama).")
+    return warnings
 
 app = FastAPI(title="UNICC Cyber AI Gateway", lifespan=lifespan)
 
@@ -133,7 +151,11 @@ async def forbidden_handler(request: Request, exc: ForbiddenError):
     return JSONResponse(status_code=403, content={"detail": str(exc)})
 
 # Counts failed logins to stop password guessing (see backend/auth/login_limiter.py).
-login_limiter = LoginLimiter()
+login_limiter = LoginLimiter(
+    max_failures_per_user=get_int("LOGIN_MAX_FAILURES_PER_USER", 5),
+    max_failures_per_ip=get_int("LOGIN_MAX_FAILURES_PER_IP", 20),     # 0 = off (see login_limiter.py)
+    window_seconds=get_int("LOGIN_BLOCK_MINUTES", 15) * 60,
+)
 
 ALL_ROLES = ["investigator", "auditor", "admin"]
 
@@ -305,9 +327,9 @@ def login(req: LoginRequest, request: Request, response: Response, db: Session =
         key="access_token", 
         value=token, 
         httponly=True, 
-        max_age=3600, 
+        max_age=TOKEN_EXPIRE_MINUTES * 60,
         samesite="lax",
-        secure=False # Set to True in production with HTTPS
+        secure=get_bool("COOKIE_SECURE", False),   # True when served over HTTPS (see .env.example)
     )
     return {"message": "Logged in successfully", "role": user["role"]}
 
