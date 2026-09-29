@@ -106,18 +106,17 @@ document.addEventListener("DOMContentLoaded", () => {
     });
 
     // Navigation Tabs
-    document.querySelectorAll(".nav-tab").forEach(tab => {
-        tab.addEventListener("click", (e) => {
-            document.querySelectorAll(".nav-tab").forEach(t => t.classList.remove("active"));
-            e.target.classList.add("active");
-            
-            document.querySelectorAll(".tab-content").forEach(c => c.classList.remove("active"));
-            const targetId = e.target.getAttribute("data-target");
-            document.getElementById(targetId).classList.add("active");
+    function showTab(targetId) {
+        document.querySelectorAll(".nav-tab").forEach(t =>
+            t.classList.toggle("active", t.getAttribute("data-target") === targetId));
+        document.querySelectorAll(".tab-content").forEach(c =>
+            c.classList.toggle("active", c.id === targetId));
+        if (targetId === "audit-tab") loadAuditLogs();
+        if (targetId === "admin-tab") loadConfig();
+    }
 
-            if (targetId === "audit-tab") loadAuditLogs();
-            if (targetId === "admin-tab") loadConfig();
-        });
+    document.querySelectorAll(".nav-tab").forEach(tab => {
+        tab.addEventListener("click", () => showTab(tab.getAttribute("data-target")));
     });
 
     // Workflow State
@@ -285,6 +284,7 @@ document.addEventListener("DOMContentLoaded", () => {
     document.getElementById("submit-decision-btn").addEventListener("click", async () => {
         const decision = document.getElementById("decision-select").value;
         const notes = document.getElementById("decision-notes").value;
+        if (!decision) return showToast("Please choose a decision first.", "error");
         const btn = document.getElementById("submit-decision-btn");
         
         btn.disabled = true;
@@ -396,16 +396,17 @@ document.addEventListener("DOMContentLoaded", () => {
         document.getElementById(viewId).classList.add("active");
     }
 
+    // Show only the tabs this role may use (the server enforces the same rules),
+    // and open the first of them.
     function updateNavForRole(role) {
         document.getElementById("user-role-badge").textContent = role;
-        document.querySelectorAll(".admin-only").forEach(el => el.style.display = 'none');
-        document.querySelectorAll(".auditor-only").forEach(el => el.style.display = 'none');
-        
-        if (role === "admin") {
-            document.querySelectorAll(".admin-only").forEach(el => el.style.display = 'block');
-        } else if (role === "auditor") {
-            document.querySelectorAll(".auditor-only").forEach(el => el.style.display = 'block');
-        }
+        let firstAllowed = null;
+        document.querySelectorAll(".nav-tab").forEach(tab => {
+            const allowed = (tab.getAttribute("data-roles") || "").split(" ").includes(role);
+            tab.style.display = allowed ? "" : "none";
+            if (allowed && !firstAllowed) firstAllowed = tab.getAttribute("data-target");
+        });
+        if (firstAllowed) showTab(firstAllowed);
     }
 
     function resetWorkflow() {
@@ -419,6 +420,9 @@ document.addEventListener("DOMContentLoaded", () => {
         document.getElementById("step-3").classList.add("disabled");
         document.getElementById("threat-match-btn").disabled = true;
         document.getElementById("summarize-btn").disabled = true;
+        // A new investigation starts with no decision and empty notes.
+        document.getElementById("decision-select").value = "";
+        document.getElementById("decision-notes").value = "";
     }
 
     function showToast(msg, type = "error") {

@@ -94,7 +94,7 @@ def require_role(token: str, required_roles: List[str]) -> dict:
     try:
         decoded = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
         if decoded.get("role") not in required_roles:
-            raise ForbiddenError(f"Requires one of roles: {required_roles}")
+            raise ForbiddenError(f"Your role ({decoded.get('role')}) is not allowed to do this.")
         return decoded
     except jwt.ExpiredSignatureError:
         raise UnauthorizedError("Token expired")

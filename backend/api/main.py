@@ -160,7 +160,7 @@ def get_session_user(token: str = Depends(get_current_user_token), db: Session =
 
 def _require(user: dict, roles: List[str]) -> dict:
     if user.get("role") not in roles:
-        raise ForbiddenError(f"Requires one of roles: {roles}")
+        raise ForbiddenError(f"Your role ({user.get('role')}) is not allowed to do this.")
     return user
 
 def get_investigator_user(user: dict = Depends(get_session_user)):

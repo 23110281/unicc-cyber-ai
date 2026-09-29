@@ -684,3 +684,17 @@ def test_unexpected_crash_shows_a_plain_message(monkeypatch):
     assert res.status_code == 500
     assert "Reference:" in res.json()["detail"]
     assert "secret internal path" not in res.text
+
+
+def test_permission_message_is_plain():
+    token = _login("test_inv", "testpass").cookies.get("access_token")
+    res = client.get("/api/v1/admin/config", cookies={"access_token": token})
+    assert res.status_code == 403
+    assert res.json()["detail"] == "Your role (investigator) is not allowed to do this."
+
+
+def test_dashboard_loads_nothing_from_the_internet():
+    # The page must work on a private network and make no outside requests.
+    for path in ["/", "/style.css", "/app.js"]:
+        body = client.get(path).text
+        assert "https://" not in body and "http://" not in body, path

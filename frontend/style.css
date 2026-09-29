@@ -9,7 +9,9 @@
     --secondary-color: #10b981;
     --accent-color: #8b5cf6;
     --error-color: #ef4444;
-    --font-family: 'Outfit', sans-serif;
+    /* Fonts already installed on the computer: nothing is downloaded from the
+       internet, so the page works on a private network and makes no outside requests. */
+    --font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
 }
 
 * {
