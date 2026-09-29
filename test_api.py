@@ -530,3 +530,59 @@ def test_pass_without_session_id_is_refused():
          "exp": datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(minutes=5)},
         JWT_SECRET, algorithm=JWT_ALGORITHM)
     assert _entities(old_style).status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# Input checks
+# ---------------------------------------------------------------------------
+def test_very_long_password_is_a_wrong_password_not_a_crash():
+    # The bug this guards against: a password over 72 bytes crashed the login (HTTP 500),
+    # skipping the guessing limit and the audit log.
+    res = _login("test_inv", "x" * 100)
+    assert res.status_code == 401
+    assert any(action == "login_failed" for action, _, _ in _audit_entries())
+
+
+def test_new_passwords_over_72_bytes_are_refused():
+    from backend.manage_users import reset_password
+    db = TestingSessionLocal()
+    with pytest.raises(ValueError, match="at most 72 bytes"):
+        reset_password(db, "test_inv", "y" * 73)
+    db.close()
+
+
+def test_decision_must_be_one_of_the_offered_choices():
+    # The bug this guards against: any text, e.g. "delete-everything", was recorded as a decision.
+    token = _login("test_inv", "testpass").cookies.get("access_token")
+    bad = client.post("/api/v1/investigation/decision", cookies={"access_token": token},
+                      json={"decision": "delete-everything", "notes": "", "correlation_id": "c1"})
+    assert bad.status_code == 422
+    assert isinstance(bad.json()["detail"], str) and "decision" in bad.json()["detail"]
+    good = client.post("/api/v1/investigation/decision", cookies={"access_token": token},
+                       json={"decision": "escalate", "notes": "confirmed", "correlation_id": "c1"})
+    assert good.status_code == 200
+
+
+def test_report_size_and_emptiness_are_checked():
+    token = _login("test_inv", "testpass").cookies.get("access_token")
+    too_long = client.post("/api/v1/investigation/entities", cookies={"access_token": token},
+                           json={"report_text": "A" * 200_001, "correlation_id": "c1"})
+    assert too_long.status_code == 422 and "report_text" in too_long.json()["detail"]
+    empty = client.post("/api/v1/investigation/analyze", cookies={"access_token": token},
+                        json={"report_text": ""})
+    assert empty.status_code == 422
+
+
+def test_oversized_requests_are_refused_before_reading():
+    token = _login("test_inv", "testpass").cookies.get("access_token")
+    huge = '{"report_text": "' + "A" * (2 * 1024 * 1024 + 10) + '", "correlation_id": "c1"}'
+    res = client.post("/api/v1/investigation/entities", cookies={"access_token": token},
+                      content=huge, headers={"Content-Type": "application/json"})
+    assert res.status_code == 413
+
+
+def test_correlation_ids_must_be_simple():
+    token = _login("test_inv", "testpass").cookies.get("access_token")
+    res = client.post("/api/v1/investigation/decision", cookies={"access_token": token},
+                      json={"decision": "monitor", "notes": "", "correlation_id": "<script>x</script>"})
+    assert res.status_code == 422

@@ -297,8 +297,9 @@ document.addEventListener("DOMContentLoaded", () => {
             if (res.ok) {
                 showToast("Decision recorded successfully!", "success");
                 setTimeout(resetWorkflow, 2000);
-            } else {
-                showToast("Failed to record decision", "error");
+            } else if (res.status !== 401) {
+                const err = await res.json().catch(() => ({}));
+                showToast(err.detail || "Failed to record decision", "error");
             }
         } catch (e) {
             showToast("Network error", "error");

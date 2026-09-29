@@ -14,8 +14,17 @@ import bcrypt
 PUBLISHED_DEFAULT_PASSWORDS = {"adminpassword", "invpassword", "audpassword"}
 
 
+# bcrypt (the password-hashing method) can only use the first 72 bytes of a password,
+# and the library refuses longer ones. We never accept longer ones as new passwords,
+# and a longer one typed at login simply counts as a wrong password (no crash).
+MAX_PASSWORD_BYTES = 72
+
+
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    return bcrypt.checkpw(plain_password.encode("utf-8"), hashed_password.encode("utf-8"))
+    candidate = plain_password.encode("utf-8")
+    if len(candidate) > MAX_PASSWORD_BYTES:
+        return False
+    return bcrypt.checkpw(candidate, hashed_password.encode("utf-8"))
 
 
 def get_password_hash(password: str) -> str:

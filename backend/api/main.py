@@ -9,9 +9,10 @@ from fastapi import FastAPI, Depends, HTTPException, status, Response, Request
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from fastapi.exceptions import RequestValidationError
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 from backend.database import engine, Base, get_db
 from backend.models import User, SystemConfig
@@ -50,6 +51,16 @@ async def lifespan(app: FastAPI):
     yield
 
 app = FastAPI(title="UNICC Cyber AI Gateway", lifespan=lifespan)
+
+@app.middleware("http")
+async def limit_request_size(request: Request, call_next):
+    """Refuse oversized requests before reading them, so one huge upload can't exhaust memory."""
+    length = request.headers.get("content-length")
+    if length and length.isdigit() and int(length) > MAX_BODY_BYTES:
+        return JSONResponse(status_code=413, content={
+            "detail": f"Request too large (limit {MAX_BODY_BYTES // (1024 * 1024)} MB). Shorten the report or split it."})
+    return await call_next(request)
+
 
 @app.middleware("http")
 async def set_cache_rules(request: Request, call_next):
@@ -96,6 +107,15 @@ if _allowed_origins:
 @app.exception_handler(UnauthorizedError)
 async def unauthorized_handler(request: Request, exc: UnauthorizedError):
     return JSONResponse(status_code=401, content={"detail": str(exc)})
+
+@app.exception_handler(RequestValidationError)
+async def validation_error_handler(request: Request, exc: RequestValidationError):
+    """Turn "the input broke a rule" errors into one readable sentence for the dashboard."""
+    messages = []
+    for error in exc.errors()[:3]:
+        field = ".".join(str(part) for part in error.get("loc", []) if part != "body")
+        messages.append(f"{field}: {error.get('msg', 'invalid value')}" if field else error.get("msg", "invalid value"))
+    return JSONResponse(status_code=422, content={"detail": "Invalid input - " + "; ".join(messages)})
 
 @app.exception_handler(ForbiddenError)
 async def forbidden_handler(request: Request, exc: ForbiddenError):
@@ -156,33 +176,43 @@ def get_llm_gateway(db: Session = Depends(get_db)):
         except Exception as e:
             raise HTTPException(status_code=503, detail=f"Gemini unavailable: {e}")
 
+# --- Input limits ---
+# Every request is checked against these before the app does any work with it.
+MAX_REPORT_CHARS = 200_000          # roughly a 50-60 page report
+MAX_EVIDENCE_CHARS = MAX_REPORT_CHARS + 20_000
+MAX_NOTES_CHARS = 5_000
+MAX_ENTITIES = 500
+MAX_ENTITY_CHARS = 512
+MAX_BODY_BYTES = 2 * 1024 * 1024    # 2 MB for any single request
+CORRELATION_ID = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9-]+$")
+
 # --- Pydantic Schemas ---
 class LoginRequest(BaseModel):
-    username: str
-    password: str
-    
+    username: str = Field(max_length=64)
+    password: str = Field(max_length=256)
+
 class AnalyzeRequest(BaseModel):
-    report_text: str
+    report_text: str = Field(min_length=1, max_length=MAX_REPORT_CHARS)
 
 class EntitiesRequest(BaseModel):
-    report_text: str
-    correlation_id: str
+    report_text: str = Field(min_length=1, max_length=MAX_REPORT_CHARS)
+    correlation_id: str = CORRELATION_ID
 
 class ThreatsRequest(BaseModel):
-    entities: List[str]
-    correlation_id: str
+    entities: List[str] = Field(max_length=MAX_ENTITIES)
+    correlation_id: str = CORRELATION_ID
 
 class SummarizeRequest(BaseModel):
-    evidence: str
-    correlation_id: str
+    evidence: str = Field(min_length=1, max_length=MAX_EVIDENCE_CHARS)
+    correlation_id: str = CORRELATION_ID
 
 class DecisionRequest(BaseModel):
-    decision: str
-    notes: str
-    correlation_id: str
+    decision: Literal["escalate", "monitor", "dismiss"]    # only the choices the dashboard offers
+    notes: str = Field(default="", max_length=MAX_NOTES_CHARS)
+    correlation_id: str = CORRELATION_ID
 
 class ConfigUpdate(BaseModel):
-    llm_backend: str
+    llm_backend: str = Field(max_length=32)
 
 # --- Endpoints ---
 @app.post("/api/v1/auth/login")
@@ -326,6 +356,8 @@ THREAT_MATCHING_UNAVAILABLE = (
 
 @app.post("/api/v1/investigation/threats")
 def get_threat_matches(req: ThreatsRequest, user: dict = Depends(get_investigator_user), db: Session = Depends(get_db)):
+    if any(len(entity) > MAX_ENTITY_CHARS for entity in req.entities):
+        raise HTTPException(status_code=422, detail=f"Invalid input - each entity must be at most {MAX_ENTITY_CHARS} characters.")
     # Matching new indicators against historical threats needs Team 2's retrieval
     # service, which is not wired in yet. Until it is, we say so plainly and return
     # no matches. We never return made-up matches: an investigator could act on them.

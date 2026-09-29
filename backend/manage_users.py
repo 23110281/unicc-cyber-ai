@@ -20,7 +20,7 @@ from typing import List, Tuple
 
 from sqlalchemy.orm import Session
 
-from backend.auth.passwords import PUBLISHED_DEFAULT_PASSWORDS, get_password_hash
+from backend.auth.passwords import MAX_PASSWORD_BYTES, PUBLISHED_DEFAULT_PASSWORDS, get_password_hash
 from backend.auth.sessions import end_all_sessions
 from backend.models import User
 
@@ -39,6 +39,8 @@ def check_password_rules(password: str) -> None:
     """Raise ValueError if the password is not acceptable."""
     if len(password) < MIN_PASSWORD_LENGTH:
         raise ValueError(f"Password must be at least {MIN_PASSWORD_LENGTH} characters long.")
+    if len(password.encode("utf-8")) > MAX_PASSWORD_BYTES:
+        raise ValueError(f"Password must be at most {MAX_PASSWORD_BYTES} bytes long (about {MAX_PASSWORD_BYTES} plain letters).")
     if password in PUBLISHED_DEFAULT_PASSWORDS:
         raise ValueError("That password was published in the project's code. Choose a different one.")
 

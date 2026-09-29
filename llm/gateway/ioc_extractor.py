@@ -38,6 +38,45 @@ DOMAIN_PATTERN = re.compile(
     rf"(?<![\w@-])(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{{0,61}}[a-zA-Z0-9])?{_DOT})+[a-zA-Z]{{2,24}}(?![\w-])"
 )
 
+# Real domain endings (top-level domains) that we accept for plain "name.ending" text.
+# Without this list, ordinary text such as "Mr.Smith" or "document.title" was
+# reported as a domain. Two-letter country endings come from the ISO 3166 list.
+_COUNTRY_TLDS = {
+    "ac", "ad", "ae", "af", "ag", "ai", "al", "am", "ao", "aq", "ar", "as", "at", "au",
+    "aw", "ax", "az", "ba", "bb", "bd", "be", "bf", "bg", "bh", "bi", "bj", "bl", "bm",
+    "bn", "bo", "bq", "br", "bs", "bt", "bv", "bw", "by", "bz", "ca", "cc", "cd", "cf",
+    "cg", "ch", "ci", "ck", "cl", "cm", "cn", "co", "cr", "cu", "cv", "cw", "cx", "cy",
+    "cz", "de", "dj", "dk", "dm", "do", "dz", "ec", "ee", "eg", "eh", "er", "es", "et",
+    "eu", "fi", "fj", "fk", "fm", "fo", "fr", "ga", "gb", "gd", "ge", "gf", "gg", "gh",
+    "gi", "gl", "gm", "gn", "gp", "gq", "gr", "gs", "gt", "gu", "gw", "gy", "hk", "hm",
+    "hn", "hr", "ht", "hu", "id", "ie", "il", "im", "in", "io", "iq", "ir", "is", "it",
+    "je", "jm", "jo", "jp", "ke", "kg", "kh", "ki", "km", "kn", "kp", "kr", "kw", "ky",
+    "kz", "la", "lb", "lc", "li", "lk", "lr", "ls", "lt", "lu", "lv", "ly", "ma", "mc",
+    "md", "me", "mf", "mg", "mh", "mk", "ml", "mm", "mn", "mo", "mp", "mq", "mr", "ms",
+    "mt", "mu", "mv", "mw", "mx", "my", "mz", "na", "nc", "ne", "nf", "ng", "ni", "nl",
+    "no", "np", "nr", "nu", "nz", "om", "pa", "pe", "pf", "pg", "ph", "pk", "pl", "pm",
+    "pn", "pr", "ps", "pt", "pw", "py", "qa", "re", "ro", "rs", "ru", "rw", "sa", "sb",
+    "sc", "sd", "se", "sg", "sh", "si", "sj", "sk", "sl", "sm", "sn", "so", "sr", "ss",
+    "st", "su", "sv", "sx", "sy", "sz", "tc", "td", "tf", "tg", "th", "tj", "tk", "tl",
+    "tm", "tn", "to", "tr", "tt", "tv", "tw", "tz", "ua", "ug", "uk", "um", "us", "uy",
+    "uz", "va", "vc", "ve", "vg", "vi", "vn", "vu", "wf", "ws", "ye", "yt", "za", "zm",
+    "zw",
+}
+_GENERIC_TLDS = {
+    "com", "net", "org", "info", "biz", "gov", "edu", "mil", "int", "arpa", "name", "pro",
+    "mobi", "asia", "tel", "travel", "jobs", "aero", "coop", "museum", "cat", "onion",
+    "xyz", "top", "online", "site", "club", "app", "dev", "cloud", "tech", "store", "shop",
+    "live", "link", "click", "win", "icu", "vip", "work", "space", "website", "fun", "email",
+    "support", "services", "digital", "network", "systems", "solutions", "security", "host",
+    "press", "news", "blog", "today", "world", "global", "zip", "mov", "bid", "loan",
+    "download", "stream", "cam", "rest", "bar", "monster", "cyou", "sbs", "cfd", "quest",
+    "buzz", "best", "lol", "ink", "gdn", "men", "party", "review", "trade", "date", "racing",
+    "science", "accountant", "faith", "cricket", "country", "kim", "mom", "pics", "uno",
+    "ltd", "company", "group", "agency", "center", "design", "one", "page", "life", "market",
+    "media", "team", "zone", "tools", "software", "exchange", "finance", "bank", "money",
+}
+KNOWN_TLDS = _COUNTRY_TLDS | _GENERIC_TLDS
+
 # Endings that look like a domain but are almost always file names ("report.pdf").
 _FILE_EXTENSIONS = {
     "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "txt", "csv", "json", "xml",
@@ -77,8 +116,15 @@ def _find_ips(text: str) -> List[str]:
 def _find_domains(text: str) -> List[str]:
     found = []
     for match in DOMAIN_PATTERN.findall(text):
-        last_part = _refang(match).rsplit(".", 1)[-1].lower()
-        if last_part in _FILE_EXTENSIONS:
+        if match != _refang(match):
+            # Written defanged ("evil[.]com"): the author deliberately marked it as an
+            # indicator, so we accept it whatever its ending.
+            found.append(match)
+            continue
+        last_part = match.rsplit(".", 1)[-1].lower()
+        if last_part in _FILE_EXTENSIONS:        # "report.pdf" is a file, not a website
+            continue
+        if last_part not in KNOWN_TLDS:          # "Mr.Smith", "document.title" are not websites
             continue
         found.append(match)
     return _unique(found)
