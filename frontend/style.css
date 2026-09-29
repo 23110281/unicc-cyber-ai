@@ -256,6 +256,12 @@ textarea {
     background: rgba(59, 130, 246, 0.1);
 }
 
+/* Tabs this role may not use. (A class/attribute, not style="display:none",
+   because the browser security rules block styles written inside the page.) */
+.nav-tab[hidden] {
+    display: none;
+}
+
 .user-controls {
     display: flex;
     align-items: center;

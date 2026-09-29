@@ -208,6 +208,12 @@ requirements.txt         App packages (pinned); requirements-dev.txt adds test t
   file's name and fingerprint (SHA-256), which links it to the investigation that used its text.
 - **Output safety:** report and AI text is always shown as plain text (no XSS); errors show a reference code, never internal details (admins see details; full text goes to the server and audit logs).
 - **Browser rules:** other websites cannot call the API (CORS closed); dashboard files re-checked after updates; investigation data never cached; no files loaded from the internet.
+- **Browser security headers** on every answer: a Content-Security-Policy that lets the page run only the
+  app's own script and stylesheet (so injected code would not run, even if it got into the page); no other
+  website may show the dashboard inside its own page (stops "clickjacking"); no file-type guessing
+  (`nosniff`); addresses are not passed on to other websites (`Referrer-Policy`). The dashboard has no inline
+  scripts, styles or `onclick` attributes, and a test keeps it that way. The `/docs` API reference loads its
+  code from a CDN, so it gets every rule except the strict script rule.
 - **No invented output:** if the AI or a module is unavailable, the app says so instead of showing made-up results.
 
 ---

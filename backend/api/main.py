@@ -144,6 +144,70 @@ async def set_cache_rules(request: Request, call_next):
     return response
 
 
+# Browser security rules sent with every answer. They add protection in the
+# browser itself, on top of what the server and dashboard code already do.
+#
+# Content-Security-Policy - which files the page may use. "Only this app's own
+#   files": no scripts or styles written inside the page, nothing from other
+#   websites, no plug-ins. So even if a report managed to slip code into the page
+#   (XSS), the browser would refuse to run it. The dashboard is written to follow
+#   this: no inline scripts, styles or onclick="..." attributes (a test checks it).
+# frame-ancestors / X-Frame-Options - no other website may show the dashboard
+#   inside its own page. That stops "clickjacking": showing it invisibly and
+#   tricking an investigator into clicking, for example, Submit Decision.
+# X-Content-Type-Options - the browser must use the file type we state, never
+#   guess one (a guess could turn text into a runnable script).
+# Referrer-Policy - addresses inside the app are never sent to other websites.
+CONTENT_SECURITY_POLICY = "; ".join([
+    "default-src 'self'",
+    "script-src 'self'",
+    "style-src 'self'",
+    "img-src 'self' data:",
+    "connect-src 'self'",
+    "object-src 'none'",
+    "base-uri 'none'",
+    "form-action 'self'",
+    "frame-ancestors 'none'",
+])
+SECURITY_HEADERS = {
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Referrer-Policy": "no-referrer",
+}
+# The API reference pages (/docs, /redoc) are made by FastAPI and load their code
+# from a public website (a CDN), which the strict rule above would block. They get
+# every rule except that one. The dashboard itself always gets the strict rule.
+_API_REFERENCE_PAGES = ("/docs", "/redoc")
+
+
+class SecurityHeaders:
+    """Adds the browser security rules above to every answer the app sends."""
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+        headers = dict(SECURITY_HEADERS)
+        if not scope.get("path", "").startswith(_API_REFERENCE_PAGES):
+            headers["Content-Security-Policy"] = CONTENT_SECURITY_POLICY
+        else:
+            headers["Content-Security-Policy"] = "frame-ancestors 'none'"
+
+        async def send_with_headers(message):
+            if message["type"] == "http.response.start":
+                present = {name.lower() for name, _ in message.get("headers", [])}
+                extra = [(name.lower().encode(), value.encode()) for name, value in headers.items()
+                         if name.lower().encode() not in present]
+                message = {**message, "headers": list(message.get("headers", [])) + extra}
+            await send(message)
+
+        await self.app(scope, receive, send_with_headers)
+
+
+app.add_middleware(SecurityHeaders)
+
+
 # Which OTHER websites may call this API from a user's browser (CORS).
 # The dashboard is served by this same app, so it needs no permission, and by
 # default NO other website is allowed. If the dashboard is ever hosted at a

@@ -450,7 +450,7 @@ document.addEventListener("DOMContentLoaded", () => {
         let firstAllowed = null;
         document.querySelectorAll(".nav-tab").forEach(tab => {
             const allowed = (tab.getAttribute("data-roles") || "").split(" ").includes(role);
-            tab.style.display = allowed ? "" : "none";
+            tab.hidden = !allowed;
             if (allowed && !firstAllowed) firstAllowed = tab.getAttribute("data-target");
         });
         if (firstAllowed) showTab(firstAllowed);

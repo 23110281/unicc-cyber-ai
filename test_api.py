@@ -839,3 +839,59 @@ def test_request_without_a_declared_size_is_still_limited():
 def test_dashboard_has_an_upload_button():
     page = client.get("/").text
     assert 'id="upload-file-btn"' in page and 'accept=".txt,.pdf,.docx"' in page
+
+
+# ---------------------------------------------------------------------------
+# Browser security rules (headers) on every answer
+# ---------------------------------------------------------------------------
+import re as _re
+
+
+def _check_security_headers(res):
+    assert res.headers["X-Content-Type-Options"] == "nosniff"
+    assert res.headers["X-Frame-Options"] == "DENY"
+    assert res.headers["Referrer-Policy"] == "no-referrer"
+    csp = res.headers["Content-Security-Policy"]
+    for rule in ["default-src 'self'", "script-src 'self'", "style-src 'self'",
+                 "object-src 'none'", "frame-ancestors 'none'"]:
+        assert rule in csp
+    assert "unsafe-inline" not in csp and "unsafe-eval" not in csp
+
+
+def test_dashboard_files_carry_the_security_headers():
+    for path in ["/", "/app.js", "/style.css"]:
+        _check_security_headers(client.get(path))
+
+
+def test_api_answers_carry_the_security_headers():
+    _check_security_headers(_login("test_inv", "testpass"))                     # success
+    _check_security_headers(_login("test_inv", "wrong"))                        # refused login
+    client.cookies.clear()
+    _check_security_headers(client.get("/api/v1/auth/me"))                      # not logged in
+    token = _login("test_inv", "testpass").cookies.get("access_token")
+    _check_security_headers(client.get("/api/v1/admin/config", cookies={"access_token": token}))  # forbidden
+    _check_security_headers(client.post("/api/v1/investigation/entities", content="x" * (3 * 1024 * 1024),
+                                        headers={"Content-Type": "application/json"}))              # too large
+
+
+def test_security_headers_do_not_break_the_api_reference_page():
+    # /docs loads its code from a public website, so it gets every rule except the
+    # strict "own files only" one - but still may not be shown inside another site.
+    res = client.get("/docs")
+    assert res.status_code == 200
+    assert res.headers["X-Frame-Options"] == "DENY"
+    assert res.headers["Content-Security-Policy"] == "frame-ancestors 'none'"
+
+
+def test_dashboard_has_no_code_the_security_rules_would_block():
+    # The strict rule blocks scripts and styles written inside the page. If someone
+    # adds one, the browser silently ignores it - this test catches that instead.
+    page = client.get("/").text
+    assert not _re.search(r"<script(?![^>]*\bsrc=)[^>]*>", page, _re.I), "inline <script>"
+    assert not _re.search(r"<style[\s>]", page, _re.I), "inline <style>"
+    assert not _re.search(r"\sstyle\s*=", page, _re.I), "style=\"...\" attribute"
+    assert not _re.search(r"\son[a-z]+\s*=", page, _re.I), "onclick=\"...\"-type attribute"
+    assert "javascript:" not in page.lower()
+    script = client.get("/app.js").text
+    assert "eval(" not in script and "new Function" not in script
+    assert not _re.search(r"setAttribute\(\s*[\"']style", script)
