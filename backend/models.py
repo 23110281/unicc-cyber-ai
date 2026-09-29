@@ -37,3 +37,19 @@ class SystemConfig(Base):
     
     key = Column(String, primary_key=True, index=True)
     value = Column(String, nullable=False)
+
+
+class RevokedToken(Base):
+    """Login passes ended early by logging out. Checked on every request."""
+    __tablename__ = "revoked_tokens"
+
+    jti = Column(String, primary_key=True)          # the pass's unique ID
+    expires_at = Column(DateTime, nullable=False)   # UTC; the row can be removed after this
+
+
+class SessionReset(Base):
+    """Passes issued to this user before `not_before` are refused (e.g. after a password reset)."""
+    __tablename__ = "session_resets"
+
+    user_id = Column(String, primary_key=True)
+    not_before = Column(DateTime, nullable=False)   # UTC

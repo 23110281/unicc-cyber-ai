@@ -70,10 +70,14 @@ class DBUserStore(IdentityProvider):
         return None
 
 def create_jwt_token(data: dict) -> str:
-    """Create a signed JWT token."""
+    """Create a signed login pass (JWT)."""
     to_encode = data.copy()
-    expire = datetime.now(timezone.utc) + timedelta(minutes=TOKEN_EXPIRE_MINUTES)
-    to_encode.update({"exp": expire})
+    now = datetime.now(timezone.utc)
+    to_encode.update({
+        "exp": now + timedelta(minutes=TOKEN_EXPIRE_MINUTES),
+        "iat": now.timestamp(),            # exact issue time (used to end sessions after a password reset)
+        "jti": secrets.token_hex(16),      # unique ID of this pass (used to log out just this session)
+    })
     encoded_jwt = jwt.encode(to_encode, JWT_SECRET, algorithm=JWT_ALGORITHM)
     return encoded_jwt
 

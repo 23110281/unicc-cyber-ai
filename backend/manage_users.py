@@ -21,6 +21,7 @@ from typing import List, Tuple
 from sqlalchemy.orm import Session
 
 from backend.auth.passwords import PUBLISHED_DEFAULT_PASSWORDS, get_password_hash
+from backend.auth.sessions import end_all_sessions
 from backend.models import User
 
 ROLES = ("investigator", "auditor", "admin")
@@ -79,6 +80,8 @@ def reset_password(db: Session, username: str, password: str) -> None:
     check_password_rules(password)
     user.hashed_password = get_password_hash(password)
     db.commit()
+    # Anyone still logged in as this user (maybe with the old password) is logged out.
+    end_all_sessions(db, user.id)
 
 
 def _ask_new_password() -> str:

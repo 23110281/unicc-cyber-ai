@@ -24,16 +24,48 @@ document.addEventListener("DOMContentLoaded", () => {
         box.replaceChildren(...children);
     }
 
-    // Check auth status
-    const isLoggedIn = document.cookie.includes("access_token");
-    let currentRole = localStorage.getItem("userRole");
+    // ------------------------------------------------------------------
+    // Session handling.
+    // The login pass is in an httpOnly cookie, which page code can't read (on
+    // purpose, so stolen page code can't steal it). So we ASK the server whether
+    // we are logged in, and which role we have, instead of guessing.
+    // ------------------------------------------------------------------
+    let currentRole = null;
 
-    if (isLoggedIn) {
-        showView("dashboard-view");
-        updateNavForRole(currentRole);
-    } else {
+    function showLoggedOut(message) {
+        currentRole = null;
+        showView("login-view");
+        resetWorkflow();
+        document.getElementById("login-error").textContent = message || "";
+    }
+
+    // Use this for every API call after login: if the server says the session
+    // has ended (401), go back to the login screen with the reason.
+    async function api(url, options) {
+        const res = await fetch(url, options);
+        if (res.status === 401) {
+            let reason = "Your session has ended. Please log in again.";
+            try { reason = (await res.clone().json()).detail || reason; } catch (e) { /* keep default */ }
+            showLoggedOut(reason);
+        }
+        return res;
+    }
+
+    async function restoreSession() {
+        try {
+            const res = await fetch("/api/v1/auth/me");
+            if (res.ok) {
+                const me = await res.json();
+                currentRole = me.role;
+                showView("dashboard-view");
+                updateNavForRole(currentRole);
+                return;
+            }
+        } catch (e) { /* server unreachable: show the login screen */ }
         showView("login-view");
     }
+
+    restoreSession();
 
     // Login Form
     document.getElementById("login-form").addEventListener("submit", async (e) => {
@@ -52,7 +84,6 @@ document.addEventListener("DOMContentLoaded", () => {
 
             if (res.ok) {
                 const data = await res.json();
-                localStorage.setItem("userRole", data.role);
                 currentRole = data.role;
                 showView("dashboard-view");
                 updateNavForRole(currentRole);
@@ -68,10 +99,10 @@ document.addEventListener("DOMContentLoaded", () => {
 
     // Logout
     document.getElementById("logout-btn").addEventListener("click", async () => {
-        await fetch("/api/v1/auth/logout", { method: "POST" });
-        localStorage.removeItem("userRole");
-        showView("login-view");
-        resetWorkflow();
+        try {
+            await fetch("/api/v1/auth/logout", { method: "POST" });
+        } catch (e) { /* still leave the page logged out */ }
+        showLoggedOut();
     });
 
     // Navigation Tabs
@@ -104,16 +135,24 @@ document.addEventListener("DOMContentLoaded", () => {
 
         try {
             // First analyze to get correlation ID
-            let res = await fetch("/api/v1/investigation/analyze", {
+            let res = await api("/api/v1/investigation/analyze", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ report_text: text })
             });
+            if (!res.ok) {
+                // 401 is already handled by api(); show any other error and stop here.
+                if (res.status !== 401) {
+                    const err = await res.json().catch(() => ({}));
+                    showToast(err.detail || "Could not start the analysis", "error");
+                }
+                return;
+            }
             let data = await res.json();
             currentCorrelationId = data.correlation_id;
 
             // Then extract entities
-            res = await fetch("/api/v1/investigation/entities", {
+            res = await api("/api/v1/investigation/entities", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ report_text: text, correlation_id: currentCorrelationId })
@@ -152,7 +191,7 @@ document.addEventListener("DOMContentLoaded", () => {
         btn.disabled = true;
 
         try {
-            const res = await fetch("/api/v1/investigation/threats", {
+            const res = await api("/api/v1/investigation/threats", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ entities: extractedEntities, correlation_id: currentCorrelationId })
@@ -204,7 +243,7 @@ document.addEventListener("DOMContentLoaded", () => {
         const evidence = document.getElementById("report-input").value + "\n" + document.getElementById("threats-display").innerText;
 
         try {
-            const res = await fetch("/api/v1/llm/summarize", {
+            const res = await api("/api/v1/llm/summarize", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ evidence: evidence, correlation_id: currentCorrelationId })
@@ -250,7 +289,7 @@ document.addEventListener("DOMContentLoaded", () => {
         
         btn.disabled = true;
         try {
-            const res = await fetch("/api/v1/investigation/decision", {
+            const res = await api("/api/v1/investigation/decision", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ decision, notes, correlation_id: currentCorrelationId })
@@ -272,7 +311,7 @@ document.addEventListener("DOMContentLoaded", () => {
     document.getElementById("refresh-audit-btn").addEventListener("click", loadAuditLogs);
     async function loadAuditLogs() {
         try {
-            const res = await fetch("/api/v1/admin/audit-logs");
+            const res = await api("/api/v1/admin/audit-logs");
             if (res.ok) {
                 const logs = await res.json();
                 const tbody = document.querySelector("#audit-table tbody");
@@ -326,7 +365,7 @@ document.addEventListener("DOMContentLoaded", () => {
     // Admin Config
     async function loadConfig() {
         try {
-            const res = await fetch("/api/v1/admin/config");
+            const res = await api("/api/v1/admin/config");
             if (res.ok) {
                 const data = await res.json();
                 document.getElementById("llm-backend-select").value = data.llm_backend;
@@ -339,7 +378,7 @@ document.addEventListener("DOMContentLoaded", () => {
     document.getElementById("save-config-btn").addEventListener("click", async () => {
         const backend = document.getElementById("llm-backend-select").value;
         try {
-            const res = await fetch("/api/v1/admin/config", {
+            const res = await api("/api/v1/admin/config", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ llm_backend: backend })

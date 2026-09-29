@@ -469,3 +469,64 @@ def test_api_answers_are_never_stored_by_browsers():
                        json={"report_text": "CVE-2023-23397", "correlation_id": "c"},
                        cookies={"access_token": token})
     assert res2.headers.get("cache-control") == "no-store"
+
+
+# ---------------------------------------------------------------------------
+# Sessions really end
+# ---------------------------------------------------------------------------
+def _entities(token):
+    return client.post("/api/v1/investigation/entities",
+                       json={"report_text": "CVE-2023-23397", "correlation_id": "c"},
+                       cookies={"access_token": token})
+
+
+def test_logout_really_ends_the_session():
+    # The bug this guards against: a pass copied before logout kept working for up to 60 minutes.
+    token = _login("test_inv", "testpass").cookies.get("access_token")
+    assert _entities(token).status_code == 200
+    client.post("/api/v1/auth/logout", cookies={"access_token": token})
+    after = _entities(token)
+    assert after.status_code == 401
+    assert "logged out" in after.json()["detail"]
+
+
+def test_logout_ends_only_that_session():
+    first = _login("test_inv", "testpass").cookies.get("access_token")
+    second = _login("test_inv", "testpass").cookies.get("access_token")   # e.g. another computer
+    client.post("/api/v1/auth/logout", cookies={"access_token": first})
+    assert _entities(first).status_code == 401
+    assert _entities(second).status_code == 200
+
+
+def test_password_reset_ends_all_sessions_of_that_user():
+    from backend.manage_users import reset_password
+    old = _login("test_inv", "testpass").cookies.get("access_token")
+    other_user = _login("test_admin", "testpass").cookies.get("access_token")
+    db = TestingSessionLocal()
+    reset_password(db, "test_inv", "a-brand-new-password-1")
+    db.close()
+    assert _entities(old).status_code == 401                         # old session is over
+    assert _entities(other_user).status_code == 200                  # other users unaffected
+    new = _login("test_inv", "a-brand-new-password-1").cookies.get("access_token")
+    assert _entities(new).status_code == 200                         # new login works straight away
+
+
+def test_who_am_i_reports_the_logged_in_user():
+    token = _login("test_inv", "testpass").cookies.get("access_token")
+    me = client.get("/api/v1/auth/me", cookies={"access_token": token})
+    assert me.status_code == 200
+    assert me.json() == {"username": "test_inv", "role": "investigator"}
+    client.cookies.clear()                    # the test client remembers cookies, like a browser
+    assert client.get("/api/v1/auth/me").status_code == 401          # not logged in
+
+
+def test_pass_without_session_id_is_refused():
+    # Passes made before sessions had IDs (or forged without one) are not accepted.
+    import datetime
+    import jwt
+    from backend.auth.auth_service import JWT_SECRET, JWT_ALGORITHM
+    old_style = jwt.encode(
+        {"id": "t2", "username": "test_inv", "role": "investigator",
+         "exp": datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(minutes=5)},
+        JWT_SECRET, algorithm=JWT_ALGORITHM)
+    assert _entities(old_style).status_code == 401

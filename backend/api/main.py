@@ -20,6 +20,7 @@ from backend.auth.auth_service import (
     UnauthorizedError, ForbiddenError, PUBLISHED_DEFAULT_PASSWORDS
 )
 from backend.auth.login_limiter import LoginLimiter
+from backend.auth.sessions import SessionEndedError, check_session, revoke_token
 from backend.manage_users import create_initial_accounts
 from backend.audit.audit_service import log_action, get_audit_logs
 from llm.gateway.adapters import GeminiGateway, OllamaGateway
@@ -117,14 +118,28 @@ def get_current_user_token(request: Request):
         raise UnauthorizedError("Not authenticated")
     return token
 
-def get_investigator_user(token: str = Depends(get_current_user_token)):
-    return require_role(token, ["investigator", "admin"])
+def get_session_user(token: str = Depends(get_current_user_token), db: Session = Depends(get_db)) -> dict:
+    """A valid pass (signature and expiry) whose session has not been ended."""
+    user = require_role(token, ALL_ROLES)
+    try:
+        check_session(db, user)
+    except SessionEndedError as ended:
+        raise UnauthorizedError(str(ended))
+    return user
 
-def get_admin_user(token: str = Depends(get_current_user_token)):
-    return require_role(token, ["admin"])
+def _require(user: dict, roles: List[str]) -> dict:
+    if user.get("role") not in roles:
+        raise ForbiddenError(f"Requires one of roles: {roles}")
+    return user
 
-def get_auditor_user(token: str = Depends(get_current_user_token)):
-    return require_role(token, ["auditor", "admin"])
+def get_investigator_user(user: dict = Depends(get_session_user)):
+    return _require(user, ["investigator", "admin"])
+
+def get_admin_user(user: dict = Depends(get_session_user)):
+    return _require(user, ["admin"])
+
+def get_auditor_user(user: dict = Depends(get_session_user)):
+    return _require(user, ["auditor", "admin"])
 
 def get_llm_gateway(db: Session = Depends(get_db)):
     config = db.query(SystemConfig).filter(SystemConfig.key == "llm_backend").first()
@@ -226,12 +241,19 @@ def logout(request: Request, response: Response, db: Session = Depends(get_db)):
     if token:
         try:
             user = require_role(token, ALL_ROLES)
+            check_session(db, user)
+            revoke_token(db, user)   # this pass is refused from now on, even if someone copied it
             log_action(db, "auth", user["id"], user["role"], "logout", "auth", "none", "success",
                        {"ip": _client_ip(request)})
-        except (UnauthorizedError, ForbiddenError):
-            pass  # an expired or invalid pass: nothing to record, just clear the cookie
+        except (UnauthorizedError, ForbiddenError, SessionEndedError):
+            pass  # an expired, invalid or already-ended pass: nothing to record, just clear the cookie
     response.delete_cookie("access_token")
     return {"message": "Logged out successfully"}
+
+@app.get("/api/v1/auth/me")
+def who_am_i(user: dict = Depends(get_session_user)):
+    """Lets the dashboard ask "am I still logged in, and as whom?" (e.g. after a page refresh)."""
+    return {"username": user.get("username"), "role": user.get("role")}
 
 @app.get("/api/v1/admin/audit-logs")
 def api_get_audit_logs(user: dict = Depends(get_auditor_user), db: Session = Depends(get_db)):
