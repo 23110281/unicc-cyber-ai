@@ -1,4 +1,3 @@
-import json
 import logging
 import math
 import os
@@ -6,21 +5,22 @@ import secrets
 import uuid
 from contextlib import asynccontextmanager
 from datetime import timezone
-from fastapi import FastAPI, Depends, HTTPException, status, Response, Request
+from fastapi import FastAPI, Depends, HTTPException, Response, Request
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
-from typing import List, Literal, Optional
+from typing import List, Literal
 
 from backend.database import engine, Base, get_db
 from backend.models import User, SystemConfig
 from backend.auth.auth_service import (
     DBUserStore, create_jwt_token, require_role,
-    UnauthorizedError, ForbiddenError, PUBLISHED_DEFAULT_PASSWORDS
+    UnauthorizedError, ForbiddenError
 )
+from backend.auth.passwords import PUBLISHED_DEFAULT_PASSWORDS
 from backend.auth.login_limiter import LoginLimiter
 from backend.auth.sessions import SessionEndedError, check_session, revoke_token
 from backend.manage_users import create_initial_accounts

@@ -11,8 +11,7 @@ import secrets
 import jwt
 from sqlalchemy.orm import Session
 from backend.models import User
-# Password helpers live in passwords.py; imported here so existing code keeps working.
-from backend.auth.passwords import PUBLISHED_DEFAULT_PASSWORDS, get_password_hash, verify_password  # noqa: F401
+from backend.auth.passwords import verify_password
 
 # Secrets that were once written in this project's public code. Anyone can read
 # them on GitHub, so they must never be accepted as the real key.

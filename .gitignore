@@ -1,6 +1,7 @@
 # ---- Python's auto-generated cache files ----
 __pycache__/
 *.pyc
+.pytest_cache/
 
 # ---- Virtual environments (your personal Python setup) ----
 .venv/

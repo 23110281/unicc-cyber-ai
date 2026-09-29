@@ -48,8 +48,8 @@ class OllamaGateway(LLMInterface):
                 raise LLMGatewayError("Ollama returned invalid JSON format.")
                 
         except requests.exceptions.Timeout:
-            raise LLMTimeoutError(f"Ollama request timed out.")
-        except requests.exceptions.HTTPError as e:
+            raise LLMTimeoutError("Ollama request timed out.")
+        except requests.exceptions.HTTPError:
             if resp.status_code == 429:
                 raise LLMGatewayError("Ollama Rate Limit Exceeded (429)")
             raise LLMGatewayError(f"Ollama HTTP error {resp.status_code}: {resp.text}")
@@ -134,7 +134,7 @@ class GeminiGateway(LLMInterface):
                 
             except requests.exceptions.Timeout:
                 if attempt == max_retries - 1:
-                    raise LLMTimeoutError(f"Gemini request timed out.")
+                    raise LLMTimeoutError("Gemini request timed out.")
                 print(f"INFO: Gemini request timed out. Retrying attempt {attempt+1}/{max_retries}...")
                 time.sleep(2 ** attempt)
             except requests.exceptions.RequestException as e:

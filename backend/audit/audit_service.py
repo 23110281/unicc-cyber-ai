@@ -4,7 +4,6 @@ Handles immutable, secure audit logging with correlation ID linking.
 Now database-backed.
 """
 import json
-from datetime import datetime
 from sqlalchemy.orm import Session
 from backend.models import AuditLog, utc_now
 
