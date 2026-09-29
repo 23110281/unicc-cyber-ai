@@ -52,6 +52,20 @@ somewhere safe — never in chat or in the code. Stop the app with **Ctrl + C**.
 
 Every new PowerShell window needs `cd` into the folder and step 2's `Activate.ps1` line again.
 
+### Getting the latest version
+
+```powershell
+git pull                                  # download the newest code
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements-dev.txt       # install any packages that were added
+pytest -q                                 # check that everything still works
+```
+
+`git pull` only updates the code, not the installed packages. If a new version needs a new
+package and you skip the `pip install` line, the app stops at startup with an error such as
+`No module named 'pypdf'`. Running it when nothing changed is harmless: packages already
+installed are skipped. Your `.env` file and database are kept.
+
 ---
 
 ## Using the dashboard
