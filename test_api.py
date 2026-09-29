@@ -586,3 +586,102 @@ def test_correlation_ids_must_be_simple():
     res = client.post("/api/v1/investigation/decision", cookies={"access_token": token},
                       json={"decision": "monitor", "notes": "", "correlation_id": "<script>x</script>"})
     assert res.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# Errors never reveal internal details
+# ---------------------------------------------------------------------------
+INTERNAL_DETAILS = "Gemini returned error status 403: {raw provider reply} HTTPConnectionPool(host='localhost', port=11434)"
+
+
+class _FakeLeakyGateway:
+    """An AI backend whose error message contains internal details."""
+    def summarize_report(self, text, config=None):
+        from llm.gateway.interface import LLMGatewayError
+        raise LLMGatewayError(INTERNAL_DETAILS)
+
+
+class _FakeSlowGateway:
+    def summarize_report(self, text, config=None):
+        from llm.gateway.interface import LLMTimeoutError
+        raise LLMTimeoutError("read timeout after 60s")
+
+
+def _summarize_as(username, gateway):
+    from backend.api.main import get_llm_gateway
+    app.dependency_overrides[get_llm_gateway] = lambda: (gateway, "test")
+    try:
+        token = _login(username, "testpass").cookies.get("access_token")
+        return client.post("/api/v1/llm/summarize", cookies={"access_token": token},
+                           json={"evidence": "some report", "correlation_id": "c1"})
+    finally:
+        del app.dependency_overrides[get_llm_gateway]
+
+
+def test_ai_errors_show_investigators_a_reference_not_internals():
+    # The bug this guards against: raw errors (internal addresses, library names,
+    # the provider's own reply) were shown on screen.
+    res = _summarize_as("test_inv", _FakeLeakyGateway())
+    assert res.status_code == 502
+    detail = res.json()["detail"]
+    for leak in ["403", "raw provider reply", "HTTPConnectionPool", "localhost", "11434"]:
+        assert leak not in detail
+    assert "Reference:" in detail
+    ref = detail.split("Reference: ")[1].split(" ")[0]
+    # ...and the full details are kept for admins in the audit log under that reference
+    stored = [d for a, _, d in _audit_entries() if a == "summarize_investigation"]
+    assert any(ref in d and "HTTPConnectionPool" in d for d in stored)
+
+
+def test_admins_see_the_details():
+    res = _summarize_as("test_admin", _FakeLeakyGateway())
+    assert res.status_code == 502
+    assert "HTTPConnectionPool" in res.json()["detail"]
+
+
+def test_ai_timeout_has_its_own_message():
+    res = _summarize_as("test_inv", _FakeSlowGateway())
+    assert res.status_code == 504
+    assert "took too long" in res.json()["detail"]
+
+
+def test_unreachable_backend_does_not_break_extraction(monkeypatch):
+    # The bug this guards against: selecting Ollama when it wasn't running also broke
+    # indicator extraction, which doesn't use AI at all.
+    import backend.api.main as main_module
+
+    class _OllamaDown:
+        def __init__(self, *args, **kwargs):
+            raise ConnectionError("HTTPConnectionPool(host='localhost', port=11434): refused")
+
+    monkeypatch.setattr(main_module, "OllamaGateway", _OllamaDown)
+    admin = _login("test_admin", "testpass").cookies.get("access_token")
+    client.post("/api/v1/admin/config", json={"llm_backend": "ollama"}, cookies={"access_token": admin})
+
+    inv = _login("test_inv", "testpass").cookies.get("access_token")
+    extract = client.post("/api/v1/investigation/entities", cookies={"access_token": inv},
+                          json={"report_text": "CVE-2023-23397 from 10.14.6.23", "correlation_id": "c1"})
+    assert extract.status_code == 200
+    assert extract.json()["cves"] == ["CVE-2023-23397"]
+
+    summary = client.post("/api/v1/llm/summarize", cookies={"access_token": inv},
+                          json={"evidence": "some report", "correlation_id": "c1"})
+    assert summary.status_code == 502
+    assert "localhost" not in summary.json()["detail"]
+
+
+def test_unexpected_crash_shows_a_plain_message(monkeypatch):
+    import backend.api.main as main_module
+    from fastapi.testclient import TestClient
+
+    def _crash(text):
+        raise RuntimeError(r"secret internal path C:\\server\\config")
+
+    monkeypatch.setattr(main_module, "extract_iocs", _crash)
+    safe_client = TestClient(app, raise_server_exceptions=False)
+    token = _login("test_inv", "testpass").cookies.get("access_token")
+    res = safe_client.post("/api/v1/investigation/entities", cookies={"access_token": token},
+                           json={"report_text": "anything", "correlation_id": "c1"})
+    assert res.status_code == 500
+    assert "Reference:" in res.json()["detail"]
+    assert "secret internal path" not in res.text

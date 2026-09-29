@@ -2,6 +2,7 @@ import json
 import logging
 import math
 import os
+import secrets
 import uuid
 from contextlib import asynccontextmanager
 from datetime import timezone
@@ -26,6 +27,7 @@ from backend.manage_users import create_initial_accounts
 from backend.audit.audit_service import log_action, get_audit_logs
 from llm.gateway.adapters import GeminiGateway, OllamaGateway
 from llm.gateway.interface import LLMGatewayError, LLMTimeoutError
+from llm.gateway.ioc_extractor import extract_iocs
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -108,6 +110,15 @@ if _allowed_origins:
 async def unauthorized_handler(request: Request, exc: UnauthorizedError):
     return JSONResponse(status_code=401, content={"detail": str(exc)})
 
+@app.exception_handler(Exception)
+async def unexpected_error_handler(request: Request, exc: Exception):
+    """Last safety net: never show a crash's internals to the user."""
+    ref = _new_error_reference()
+    _server_log.error(f"[error ref {ref}] Unexpected error on {request.method} {request.url.path}",
+                      exc_info=(type(exc), exc, exc.__traceback__))
+    return JSONResponse(status_code=500, content={
+        "detail": f"Something went wrong on the server. Reference: {ref} - an administrator can find the details in the server log."})
+
 @app.exception_handler(RequestValidationError)
 async def validation_error_handler(request: Request, exc: RequestValidationError):
     """Turn "the input broke a rule" errors into one readable sentence for the dashboard."""
@@ -161,20 +172,55 @@ def get_admin_user(user: dict = Depends(get_session_user)):
 def get_auditor_user(user: dict = Depends(get_session_user)):
     return _require(user, ["auditor", "admin"])
 
+class _UnavailableGateway:
+    """Stands in for an AI backend that could not be set up, so that failure is
+    handled exactly like any other AI failure (safe message, audit entry)."""
+    def __init__(self, reason: str):
+        self.reason = reason
+
+    def _fail(self, *args, **kwargs):
+        raise LLMGatewayError(self.reason)
+
+    summarize_report = extract_entities = investigate_synthesis = _fail
+
+
 def get_llm_gateway(db: Session = Depends(get_db)):
     config = db.query(SystemConfig).filter(SystemConfig.key == "llm_backend").first()
     backend = config.value if config else "gemini"
-    
-    if backend == "ollama":
-        try:
-            return OllamaGateway(), "ollama"
-        except Exception as e:
-            raise HTTPException(status_code=503, detail=f"Ollama unavailable: {e}")
-    else:
-        try:
-            return GeminiGateway(), "gemini"
-        except Exception as e:
-            raise HTTPException(status_code=503, detail=f"Gemini unavailable: {e}")
+    try:
+        return (OllamaGateway() if backend == "ollama" else GeminiGateway()), backend
+    except Exception as e:
+        return _UnavailableGateway(f"The '{backend}' backend could not be set up: {e}"), backend
+
+
+_server_log = logging.getLogger("uvicorn.error")
+
+
+def _new_error_reference() -> str:
+    return secrets.token_hex(4).upper()
+
+
+def _ai_failure(db: Session, user: dict, correlation_id: str, action: str, backend_name: str, error: Exception) -> HTTPException:
+    """
+    Record an AI failure in full for admins, and return a SAFE message for the user.
+
+    Raw errors can reveal internal addresses, library names or the AI provider's own
+    replies - useful to an attacker, useless to an investigator. The full text goes to
+    the server log and the audit log under a short reference code; the user sees the
+    code, which an administrator can look up. Admins also see the details directly.
+    """
+    ref = _new_error_reference()
+    _server_log.error(f"[error ref {ref}] {action} failed with the '{backend_name}' AI backend: {error}")
+    log_action(db, correlation_id, user["id"], user["role"], action, "doc_current", backend_name, "failure",
+               {"error": str(error)[:2000], "error_ref": ref})
+
+    timed_out = isinstance(error, LLMTimeoutError)
+    message = ("The AI model took too long to answer. Please try again." if timed_out
+               else "The AI model could not produce an answer right now.")
+    if user.get("role") == "admin":
+        message += f" Details (shown to admins only): {str(error)[:500]}"
+    message += f" Reference: {ref} - an administrator can find the details in the server and audit logs."
+    return HTTPException(status_code=504 if timed_out else 502, detail=message)
 
 # --- Input limits ---
 # Every request is checked against these before the app does any work with it.
@@ -338,16 +384,14 @@ def analyze_report(req: AnalyzeRequest, user: dict = Depends(get_investigator_us
     return {"correlation_id": correlation_id, "text": req.report_text}
 
 @app.post("/api/v1/investigation/entities")
-def extract_entities(req: EntitiesRequest, user: dict = Depends(get_investigator_user), 
-                     db: Session = Depends(get_db), gw_dep = Depends(get_llm_gateway)):
-    gw, backend_name = gw_dep
-    try:
-        res = gw.extract_entities(req.report_text)
-        log_action(db, req.correlation_id, user["id"], user["role"], "extract_entities", "doc_current", backend_name, "success")
-        return res
-    except LLMGatewayError as e:
-        log_action(db, req.correlation_id, user["id"], user["role"], "extract_entities", "doc_current", backend_name, "failure", {"error": str(e)})
-        raise HTTPException(status_code=502, detail=str(e))
+def extract_entities(req: EntitiesRequest, user: dict = Depends(get_investigator_user),
+                     db: Session = Depends(get_db)):
+    # Pattern-based stand-in extractor (no AI) until Team 1's pipeline is connected.
+    # It needs no AI model, so this step works whichever backend is selected - or if
+    # none is reachable.
+    res = extract_iocs(req.report_text)
+    log_action(db, req.correlation_id, user["id"], user["role"], "extract_entities", "doc_current", "none", "success")
+    return res
 
 THREAT_MATCHING_UNAVAILABLE = (
     "Threat matching is not connected yet. It needs the historical-threat search "
@@ -374,8 +418,7 @@ def summarize_investigation(req: SummarizeRequest, user: dict = Depends(get_inve
         log_action(db, req.correlation_id, user["id"], user["role"], "summarize_investigation", "doc_current", backend_name, "success")
         return res
     except LLMGatewayError as e:
-        log_action(db, req.correlation_id, user["id"], user["role"], "summarize_investigation", "doc_current", backend_name, "failure", {"error": str(e)})
-        raise HTTPException(status_code=502, detail=str(e))
+        raise _ai_failure(db, user, req.correlation_id, "summarize_investigation", backend_name, e)
 
 @app.post("/api/v1/investigation/decision")
 def final_decision(req: DecisionRequest, user: dict = Depends(get_investigator_user), db: Session = Depends(get_db)):
