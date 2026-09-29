@@ -4,24 +4,19 @@ Handles JWT creation, httpOnly cookies, and defines an abstract IdentityProvider
 """
 from abc import ABC, abstractmethod
 from typing import Optional, Dict, List
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import logging
 import os
 import secrets
 import jwt
-import bcrypt
 from sqlalchemy.orm import Session
 from backend.models import User
+# Password helpers live in passwords.py; imported here so existing code keeps working.
+from backend.auth.passwords import PUBLISHED_DEFAULT_PASSWORDS, get_password_hash, verify_password  # noqa: F401
 
 # Secrets that were once written in this project's public code. Anyone can read
 # them on GitHub, so they must never be accepted as the real key.
 _KNOWN_PUBLIC_SECRETS = {"super-secret-dev-key-that-is-at-least-32-bytes-long!"}
-
-
-# Passwords that were once written in this project's public code for the demo
-# accounts. Anyone can read them on GitHub, so they are refused at login even if
-# an old database still contains them.
-PUBLISHED_DEFAULT_PASSWORDS = {"adminpassword", "invpassword", "audpassword"}
 
 
 def _load_jwt_secret() -> str:
@@ -57,12 +52,6 @@ JWT_SECRET = _load_jwt_secret()
 JWT_ALGORITHM = "HS256"
 TOKEN_EXPIRE_MINUTES = 60
 
-def verify_password(plain_password: str, hashed_password: str) -> bool:
-    return bcrypt.checkpw(plain_password.encode('utf-8'), hashed_password.encode('utf-8'))
-
-def get_password_hash(password: str) -> str:
-    return bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
-
 class IdentityProvider(ABC):
     @abstractmethod
     def authenticate(self, username: str, password: str) -> Optional[Dict[str, str]]:
@@ -83,7 +72,7 @@ class DBUserStore(IdentityProvider):
 def create_jwt_token(data: dict) -> str:
     """Create a signed JWT token."""
     to_encode = data.copy()
-    expire = datetime.utcnow() + timedelta(minutes=TOKEN_EXPIRE_MINUTES)
+    expire = datetime.now(timezone.utc) + timedelta(minutes=TOKEN_EXPIRE_MINUTES)
     to_encode.update({"exp": expire})
     encoded_jwt = jwt.encode(to_encode, JWT_SECRET, algorithm=JWT_ALGORITHM)
     return encoded_jwt

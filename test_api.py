@@ -319,3 +319,132 @@ def test_allowing_every_website_cannot_be_configured(monkeypatch):
         _load_allowed_origins()
     monkeypatch.setenv("ALLOWED_ORIGINS", "https://dashboard.example.org, https://other.example.org")
     assert _load_allowed_origins() == ["https://dashboard.example.org", "https://other.example.org"]
+
+
+# ---------------------------------------------------------------------------
+# Password-guessing limit
+# ---------------------------------------------------------------------------
+@pytest.fixture(autouse=True)
+def _fresh_login_limiter():
+    # Every test starts with no recorded failed logins.
+    from backend.api.main import login_limiter
+    login_limiter.reset()
+    yield
+    login_limiter.reset()
+
+
+def _login(username, password):
+    return client.post("/api/v1/auth/login", json={"username": username, "password": password})
+
+
+def test_password_guessing_is_blocked_after_5_failures():
+    # The bug this guards against: unlimited wrong passwords, with no slowdown.
+    for _ in range(5):
+        assert _login("test_admin", "wrong-guess").status_code == 401
+    blocked = _login("test_admin", "testpass")          # even the RIGHT password is refused now
+    assert blocked.status_code == 429
+    assert "Retry-After" in blocked.headers
+    assert "access_token" not in blocked.cookies
+    assert _login("test_inv", "testpass").status_code == 200   # other users are not affected
+
+
+def test_successful_login_clears_earlier_failures():
+    for _ in range(4):
+        _login("test_admin", "wrong-guess")
+    assert _login("test_admin", "testpass").status_code == 200
+    for _ in range(4):
+        _login("test_admin", "wrong-guess")
+    assert _login("test_admin", "testpass").status_code == 200
+
+
+def test_one_computer_cannot_try_many_usernames():
+    for i in range(20):
+        _login(f"made-up-user-{i}", "wrong-guess")
+    assert _login("test_inv", "testpass").status_code == 429
+
+
+def test_block_ends_after_the_time_window():
+    from backend.auth.login_limiter import LoginLimiter
+    now = [1000.0]
+    limiter = LoginLimiter(max_failures_per_user=5, window_seconds=900, clock=lambda: now[0])
+    for _ in range(5):
+        limiter.record_failure("alice", "10.0.0.1")
+    assert limiter.seconds_until_allowed("alice", "10.0.0.1") == 900
+    now[0] += 899
+    assert limiter.seconds_until_allowed("alice", "10.0.0.1") == 1
+    now[0] += 1
+    assert limiter.seconds_until_allowed("alice", "10.0.0.1") == 0
+
+
+# ---------------------------------------------------------------------------
+# Audit log records logins, logouts and admin actions
+# ---------------------------------------------------------------------------
+def _audit_entries():
+    db = TestingSessionLocal()
+    entries = [(e.action, e.user, e.details) for e in db.query(AuditLog).all()]
+    db.close()
+    return entries
+
+
+def test_logins_logouts_and_admin_actions_are_audited():
+    # The bug this guards against: logins, failed logins, logouts, setting changes
+    # and audit-log views left no trace.
+    _login("test_admin", "wrong-guess")
+    res = _login("test_admin", "testpass")
+    token = res.cookies.get("access_token")
+    client.post("/api/v1/admin/config", json={"llm_backend": "ollama"}, cookies={"access_token": token})
+    client.post("/api/v1/admin/config", json={"llm_backend": "gemini"}, cookies={"access_token": token})
+    client.get("/api/v1/admin/audit-logs", cookies={"access_token": token})
+    client.post("/api/v1/auth/logout", cookies={"access_token": token})
+
+    actions = [action for action, _, _ in _audit_entries()]
+    for expected in ["login_failed", "login", "config_change", "view_audit_logs", "logout"]:
+        assert expected in actions, f"'{expected}' was not recorded"
+    changes = [d for a, _, d in _audit_entries() if a == "config_change"]
+    assert len(changes) == 2
+    assert any('"old_value": "ollama"' in d and '"new_value": "gemini"' in d for d in changes)
+
+
+def test_blocked_logins_are_audited_and_passwords_never_are():
+    for _ in range(6):
+        _login("test_admin", "my-secret-guess-123")
+    entries = _audit_entries()
+    assert any(action == "login_blocked" for action, _, _ in entries)
+    for _, _, details in entries:
+        assert "my-secret-guess-123" not in details
+
+
+def test_audit_log_page_returns_complete_entries():
+    # Guards against entries coming back empty ({}) from the audit-log page.
+    res = _login("test_admin", "testpass")
+    token = res.cookies.get("access_token")
+    page = client.get("/api/v1/admin/audit-logs", cookies={"access_token": token})
+    assert page.status_code == 200
+    entries = page.json()
+    assert len(entries) >= 2                      # the login and this view
+    for entry in entries:
+        for field in ["timestamp", "action", "user", "role", "correlation_id", "details"]:
+            assert entry.get(field) not in (None, ""), f"'{field}' missing in {entry}"
+    assert {"login", "view_audit_logs"} <= {entry["action"] for entry in entries}
+
+
+def test_audit_times_are_labelled_utc_and_correct():
+    # The bug this guards against: times were stored in UTC but sent without a
+    # timezone label, so browsers showed them 5.5 hours off in India.
+    import datetime
+    res = _login("test_admin", "testpass")
+    token = res.cookies.get("access_token")
+    entries = client.get("/api/v1/admin/audit-logs", cookies={"access_token": token}).json()
+    now = datetime.datetime.now(datetime.timezone.utc)
+    for entry in entries:
+        assert entry["timestamp"].endswith("+00:00"), entry["timestamp"]
+        when = datetime.datetime.fromisoformat(entry["timestamp"])
+        assert abs((now - when).total_seconds()) < 120
+
+
+def test_audit_page_shows_usernames():
+    res = _login("test_admin", "testpass")
+    token = res.cookies.get("access_token")
+    entries = client.get("/api/v1/admin/audit-logs", cookies={"access_token": token}).json()
+    login_entry = next(e for e in entries if e["action"] == "login")
+    assert login_entry["username"] == "test_admin"

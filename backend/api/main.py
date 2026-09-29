@@ -1,8 +1,10 @@
 import json
 import logging
+import math
 import os
 import uuid
 from contextlib import asynccontextmanager
+from datetime import timezone
 from fastapi import FastAPI, Depends, HTTPException, status, Response, Request
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -17,6 +19,7 @@ from backend.auth.auth_service import (
     DBUserStore, create_jwt_token, require_role,
     UnauthorizedError, ForbiddenError, PUBLISHED_DEFAULT_PASSWORDS
 )
+from backend.auth.login_limiter import LoginLimiter
 from backend.manage_users import create_initial_accounts
 from backend.audit.audit_service import log_action, get_audit_logs
 from llm.gateway.adapters import GeminiGateway, OllamaGateway
@@ -76,6 +79,16 @@ async def unauthorized_handler(request: Request, exc: UnauthorizedError):
 @app.exception_handler(ForbiddenError)
 async def forbidden_handler(request: Request, exc: ForbiddenError):
     return JSONResponse(status_code=403, content={"detail": str(exc)})
+
+# Counts failed logins to stop password guessing (see backend/auth/login_limiter.py).
+login_limiter = LoginLimiter()
+
+ALL_ROLES = ["investigator", "auditor", "admin"]
+
+
+def _client_ip(request: Request) -> str:
+    return request.client.host if request.client else "unknown"
+
 
 # --- Dependencies ---
 def get_current_user_token(request: Request):
@@ -138,19 +151,44 @@ class ConfigUpdate(BaseModel):
 
 # --- Endpoints ---
 @app.post("/api/v1/auth/login")
-def login(req: LoginRequest, response: Response, db: Session = Depends(get_db)):
+def login(req: LoginRequest, request: Request, response: Response, db: Session = Depends(get_db)):
+    ip = _client_ip(request)
+    # Recorded in the audit log for failed attempts. Never the password.
+    attempt = {"attempted_username": req.username[:64], "ip": ip}
+
+    # 1) Too many recent failures for this username or this computer? Refuse without checking.
+    wait_seconds = login_limiter.seconds_until_allowed(req.username, ip)
+    if wait_seconds:
+        log_action(db, "auth", "anonymous", "none", "login_blocked", "auth", "none", "failure",
+                   {**attempt, "retry_after_seconds": wait_seconds})
+        raise HTTPException(
+            status_code=429,
+            detail=f"Too many failed login attempts. Try again in {math.ceil(wait_seconds / 60)} minute(s).",
+            headers={"Retry-After": str(wait_seconds)},
+        )
+
+    # 2) Passwords that were public in the project's code are never accepted.
     if req.password in PUBLISHED_DEFAULT_PASSWORDS:
-        # These were public in the project's code; an old database may still use them.
+        login_limiter.record_failure(req.username, ip)
+        log_action(db, "auth", "anonymous", "none", "login_failed", "auth", "none", "failure",
+                   {**attempt, "reason": "published default password"})
         raise HTTPException(
             status_code=401,
             detail="This password was published in the project's code and is no longer accepted. "
                    "An admin can set a new one with: python -m backend.manage_users reset-password <username>",
         )
-    store = DBUserStore(db)
-    user = store.authenticate(req.username, req.password)
+
+    # 3) Normal check.
+    user = DBUserStore(db).authenticate(req.username, req.password)
     if not user:
+        login_limiter.record_failure(req.username, ip)
+        log_action(db, "auth", "anonymous", "none", "login_failed", "auth", "none", "failure",
+                   {**attempt, "reason": "invalid credentials"})
         raise HTTPException(status_code=401, detail="Invalid credentials")
-    
+
+    login_limiter.record_success(req.username)
+    log_action(db, "auth", user["id"], user["role"], "login", "auth", "none", "success", {"ip": ip})
+
     token = create_jwt_token(user)
     response.set_cookie(
         key="access_token", 
@@ -163,14 +201,38 @@ def login(req: LoginRequest, response: Response, db: Session = Depends(get_db)):
     return {"message": "Logged in successfully", "role": user["role"]}
 
 @app.post("/api/v1/auth/logout")
-def logout(response: Response):
+def logout(request: Request, response: Response, db: Session = Depends(get_db)):
+    token = request.cookies.get("access_token")
+    if token:
+        try:
+            user = require_role(token, ALL_ROLES)
+            log_action(db, "auth", user["id"], user["role"], "logout", "auth", "none", "success",
+                       {"ip": _client_ip(request)})
+        except (UnauthorizedError, ForbiddenError):
+            pass  # an expired or invalid pass: nothing to record, just clear the cookie
     response.delete_cookie("access_token")
     return {"message": "Logged out successfully"}
 
 @app.get("/api/v1/admin/audit-logs")
 def api_get_audit_logs(user: dict = Depends(get_auditor_user), db: Session = Depends(get_db)):
-    logs = get_audit_logs(db)
-    return logs
+    # Looking at the audit log is itself recorded. This is done FIRST: saving a new
+    # entry clears rows already loaded in this session, which would send them empty.
+    log_action(db, "admin", user["id"], user["role"], "view_audit_logs", "audit_log", "none", "success")
+    usernames = {u.id: u.username for u in db.query(User).all()}
+    return [
+        {
+            "id": entry.id,
+            # Stored in UTC; the "+00:00" label lets each browser convert it to local time.
+            "timestamp": entry.timestamp.replace(tzinfo=timezone.utc).isoformat(),
+            "action": entry.action,
+            "user": entry.user,
+            "username": usernames.get(entry.user, entry.user),
+            "role": entry.role,
+            "correlation_id": entry.correlation_id,
+            "details": entry.details,
+        }
+        for entry in get_audit_logs(db)
+    ]
 
 @app.get("/api/v1/admin/config")
 def api_get_config(user: dict = Depends(get_admin_user), db: Session = Depends(get_db)):
@@ -180,14 +242,19 @@ def api_get_config(user: dict = Depends(get_admin_user), db: Session = Depends(g
 @app.post("/api/v1/admin/config")
 def api_update_config(req: ConfigUpdate, user: dict = Depends(get_admin_user), db: Session = Depends(get_db)):
     if req.llm_backend not in ["gemini", "ollama"]:
+        log_action(db, "admin", user["id"], user["role"], "config_change", "system_config", "none", "failure",
+                   {"setting": "llm_backend", "rejected_value": req.llm_backend[:64]})
         raise HTTPException(status_code=400, detail="Invalid backend")
-        
+
     config = db.query(SystemConfig).filter(SystemConfig.key == "llm_backend").first()
+    old_value = config.value if config else None
     if config:
         config.value = req.llm_backend
     else:
         db.add(SystemConfig(key="llm_backend", value=req.llm_backend))
     db.commit()
+    log_action(db, "admin", user["id"], user["role"], "config_change", "system_config", "none", "success",
+               {"setting": "llm_backend", "old_value": old_value, "new_value": req.llm_backend})
     return {"message": "Config updated"}
 
 

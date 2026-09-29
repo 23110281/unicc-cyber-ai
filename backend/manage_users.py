@@ -20,7 +20,7 @@ from typing import List, Tuple
 
 from sqlalchemy.orm import Session
 
-from backend.auth.auth_service import PUBLISHED_DEFAULT_PASSWORDS, get_password_hash
+from backend.auth.passwords import PUBLISHED_DEFAULT_PASSWORDS, get_password_hash
 from backend.models import User
 
 ROLES = ("investigator", "auditor", "admin")
@@ -111,6 +111,9 @@ def main(argv: List[str]) -> int:
         return 1
     except ValueError as error:
         print(f"Error: {error}")
+        return 1
+    except (KeyboardInterrupt, EOFError):
+        print("\nCancelled. Nothing was changed.")
         return 1
     finally:
         db.close()

@@ -255,17 +255,44 @@ document.addEventListener("DOMContentLoaded", () => {
                 const logs = await res.json();
                 const tbody = document.querySelector("#audit-table tbody");
                 tbody.innerHTML = "";
+                // Every cell is filled with textContent (plain text), never innerHTML:
+                // entries can contain text typed by anyone, e.g. a made-up username
+                // from a failed login, and it must never run as code in this page.
+                const cell = (text) => {
+                    const td = document.createElement("td");
+                    td.textContent = text;
+                    return td;
+                };
                 logs.forEach(log => {
+                    let details = {};
+                    try { details = JSON.parse(log.details); } catch (e) { /* show the rest anyway */ }
+
+                    // Stored in UTC; shown in this computer's local time, with its time zone.
+                    const when = new Date(log.timestamp).toLocaleString(undefined, { timeZoneName: "short" });
+                    let who = log.username || log.user;
+                    if (details.attempted_username) who += ` (tried: ${details.attempted_username})`;
+
                     const tr = document.createElement("tr");
-                    tr.innerHTML = `
-                        <td>${new Date(log.timestamp).toLocaleString()}</td>
-                        <td>${log.user}</td>
-                        <td><span class="badge">${log.role}</span></td>
-                        <td>${log.action}</td>
-                        <td>${JSON.parse(log.details).llm_backend_used || '-'}</td>
-                        <td>${JSON.parse(log.details).outcome}</td>
-                        <td><button onclick='alert(this.getAttribute("data-details"))' data-details='${log.details.replace(/'/g, "&apos;").replace(/"/g, "&quot;")}' class="btn outline-btn small-btn">View</button></td>
-                    `;
+                    tr.appendChild(cell(when));
+                    tr.appendChild(cell(who));
+                    const roleCell = document.createElement("td");
+                    const badge = document.createElement("span");
+                    badge.className = "badge";
+                    badge.textContent = log.role;
+                    roleCell.appendChild(badge);
+                    tr.appendChild(roleCell);
+                    tr.appendChild(cell(log.action));
+                    tr.appendChild(cell(details.llm_backend_used || "-"));
+                    tr.appendChild(cell(details.outcome || "-"));
+
+                    const viewCell = document.createElement("td");
+                    const viewBtn = document.createElement("button");
+                    viewBtn.className = "btn outline-btn small-btn";
+                    viewBtn.textContent = "View";
+                    viewBtn.addEventListener("click", () => alert(JSON.stringify(details, null, 2)));
+                    viewCell.appendChild(viewBtn);
+                    tr.appendChild(viewCell);
+
                     tbody.appendChild(tr);
                 });
             }
