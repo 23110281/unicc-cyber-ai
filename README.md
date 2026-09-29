@@ -65,7 +65,9 @@ Each role sees only the tabs it may use (the server enforces the same rules):
 | **admin** | Everything above, plus switch the AI backend | Investigate, Audit Logs, System Config |
 
 **Investigation workflow** (Investigate tab):
-1. **Ingest report** — paste the report text (up to 200,000 characters) → *Analyze & Extract Entities*.
+1. **Ingest report** — paste the report text (up to 200,000 characters), **or** click *Upload file* and
+   choose a `.txt`, `.pdf` or `.docx` file (up to 20 MB). The file's text appears in the box, where you can
+   check or edit it → *Analyze & Extract Entities*.
 2. **Threat matching** — *Run Threat Matching* (currently says "not connected yet"; see below).
 3. **Synthesis & decision** — *Synthesize Summary*, then choose **escalate / monitor / dismiss**,
    add notes, *Submit Decision*. The decision and notes are recorded in the audit log.
@@ -130,8 +132,9 @@ so they need no internet, no API key and no Ollama, and they ignore your persona
 
 | File | Covers |
 |---|---|
-| `test_api.py` | Login, roles, sessions and logout, password rules, guessing limit, audit log, input limits, safe error messages, no fake AI output, browser security headers |
+| `test_api.py` | Login, roles, sessions and logout, password rules, guessing limit, audit log, input limits, safe error messages, no fake AI output, browser security headers, report file upload and request-size limits |
 | `test_ioc_extractor.py` | Indicator extraction: finds only what is in the text, ignores look-alikes |
+| `test_file_extractor.py` | Reading uploaded files: text from .txt/.pdf/.docx, refusing wrong, damaged, password-locked or oversized files and zip bombs |
 | `test_settings.py` | Loading settings from `.env`, AI model settings, disabling the per-address limit |
 
 ---
@@ -146,6 +149,7 @@ backend/
   auth/sessions.py       Logout and "log out everywhere" after a password reset
   auth/login_limiter.py  Password-guessing limit
   audit/audit_service.py Audit log (append-only, secrets removed)
+  ingest/file_extractor.py Reads the text out of an uploaded .txt, .pdf or .docx report
   config.py              Reads settings from .env / environment variables
   database.py, models.py Database connection and tables
   manage_users.py        Command-line user management
@@ -164,6 +168,7 @@ requirements.txt         App packages (pinned); requirements-dev.txt adds test t
 | Endpoint | Who | Purpose |
 |---|---|---|
 | `POST /auth/login`, `POST /auth/logout`, `GET /auth/me` | anyone / logged in | Sessions |
+| `POST /investigation/upload` | investigator, admin | Read the text of an uploaded report file |
 | `POST /investigation/analyze` | investigator, admin | Start an investigation (returns an ID) |
 | `POST /investigation/entities` | investigator, admin | Extract indicators from report text |
 | `POST /investigation/threats` | investigator, admin | Historical threat matching (not connected yet) |
@@ -180,7 +185,13 @@ requirements.txt         App packages (pinned); requirements-dev.txt adds test t
 - **Login protection:** bcrypt passwords (12–72 characters), guessing limit per account and per address, real logout, password reset ends all of that user's sessions, httpOnly cookies.
 - **Roles enforced on the server** for every endpoint; each role sees only its own tabs.
 - **Audit log:** logins, failed and blocked logins, logouts, investigation steps, decisions, admin changes and audit-log views — with UTC timestamps shown in local time, never passwords or keys.
-- **Input rules:** size limits (2 MB per request, 200,000-character reports), allowed values only, simple IDs.
+- **Input rules:** size limits (2 MB per request, 20 MB per uploaded file, 200,000-character reports) — also
+  for requests that don't announce their size; allowed values only, simple IDs.
+- **Uploaded files:** only `.txt`, `.pdf` and `.docx`, checked against their contents (a renamed program is
+  refused). Only the text is read — nothing in a file is ever run — and the file is not kept. Protected
+  against "zip bombs" and oversized PDFs. Unreadable files (damaged, password-locked, scanned images, unknown
+  text encodings) are refused with a clear reason, never turned into guessed text. The audit log records the
+  file's name and fingerprint (SHA-256), which links it to the investigation that used its text.
 - **Output safety:** report and AI text is always shown as plain text (no XSS); errors show a reference code, never internal details (admins see details; full text goes to the server and audit logs).
 - **Browser rules:** other websites cannot call the API (CORS closed); dashboard files re-checked after updates; investigation data never cached; no files loaded from the internet.
 - **No invented output:** if the AI or a module is unavailable, the app says so instead of showing made-up results.
@@ -213,7 +224,9 @@ made-up results**. The tests check this.
 ## Known limitations / next steps
 
 - Docker packaging and on-premise / API deployment configurations are not done yet.
-- No file upload yet (paste only); no "newly observed threat" query box; no evidence/source display (needs Team 2).
+- Uploads read the text of `.txt`, `.pdf` and `.docx` only: no scanned PDFs or images (that would need text
+  recognition, OCR), no old `.doc` files, and text inside Word text boxes, headers and footers is skipped.
+- No "newly observed threat" query box; no evidence/source display (needs Team 2).
 - Audit log page shows the latest 100 entries (no search or export) and is not tamper-proof yet.
 - No prompt-injection defence yet (to be done with Team 3), and no "pause the AI" switch.
 - A real AI summary has not been verified end-to-end in this app yet (needs a Gemini key or Ollama).

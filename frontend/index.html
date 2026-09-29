@@ -51,7 +51,12 @@
                     <div class="workflow-container">
                         <div class="workflow-step glass-panel" id="step-1">
                             <h2>1. Ingest Report</h2>
-                            <textarea id="report-input" placeholder="Paste intelligence report here..." rows="6"></textarea>
+                            <textarea id="report-input" placeholder="Paste intelligence report here, or upload a file below..." rows="6"></textarea>
+                            <div class="file-upload-row">
+                                <button type="button" id="upload-file-btn" class="btn secondary-btn small-btn">Upload file</button>
+                                <input type="file" id="report-file-input" accept=".txt,.pdf,.docx" hidden>
+                                <span id="report-file-name" class="file-name">.txt, .pdf or .docx, up to 20 MB</span>
+                            </div>
                             <button id="analyze-btn" class="btn primary-btn">Analyze & Extract Entities</button>
                         </div>
                         

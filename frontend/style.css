@@ -192,6 +192,24 @@ textarea {
     filter: grayscale(100%);
 }
 
+/* Ingest report: the "Upload file" row between the paste box and the Analyze button */
+.file-upload-row {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    margin: 0.75rem 0;
+    min-width: 0;
+}
+
+.file-upload-row .file-name {
+    color: var(--text-secondary);
+    font-size: 0.875rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+}
+
 .mt-2 { margin-top: 0.5rem; }
 .mt-3 { margin-top: 1rem; }
 .mt-4 { margin-top: 1.5rem; }

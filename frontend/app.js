@@ -1,4 +1,8 @@
 document.addEventListener("DOMContentLoaded", () => {
+    // Report file upload: the same size limit as the server (MAX_UPLOAD_BYTES in main.py).
+    const MAX_UPLOAD_MB = 20;
+    const FILE_HINT = `.txt, .pdf or .docx, up to ${MAX_UPLOAD_MB} MB`;
+
     // ------------------------------------------------------------------
     // Safe display helpers.
     // Anything that comes from a report or from the AI is shown as PLAIN TEXT
@@ -122,6 +126,49 @@ document.addEventListener("DOMContentLoaded", () => {
     // Workflow State
     let currentCorrelationId = null;
     let extractedEntities = null;
+
+    // Step 1 (other way in): load the report from a .txt, .pdf or .docx file.
+    // The server reads the file and sends back its text, which goes into the paste
+    // box. The investigator checks it and clicks "Analyze" as usual.
+    const fileInput = document.getElementById("report-file-input");
+    const uploadBtn = document.getElementById("upload-file-btn");
+    const fileNameLabel = document.getElementById("report-file-name");
+
+    uploadBtn.addEventListener("click", () => fileInput.click());
+
+    fileInput.addEventListener("change", async () => {
+        const file = fileInput.files[0];
+        fileInput.value = "";                 // so choosing the same file again still works
+        if (!file) return;
+        if (file.size > MAX_UPLOAD_MB * 1024 * 1024) {
+            return showToast(`This file is larger than ${MAX_UPLOAD_MB} MB. Split the report, or paste its text instead.`, "error");
+        }
+
+        uploadBtn.disabled = true;
+        uploadBtn.textContent = "Reading file...";
+        const formData = new FormData();
+        formData.append("file", file);
+
+        try {
+            const res = await api("/api/v1/investigation/upload", { method: "POST", body: formData });
+            if (res.ok) {
+                const data = await res.json();
+                // A new report: clear any results that belong to the previous one.
+                if (currentCorrelationId) resetWorkflow();
+                document.getElementById("report-input").value = data.text;
+                fileNameLabel.textContent = `${data.filename} (${data.characters.toLocaleString()} characters)`;
+                showToast("Text loaded from the file. Check it, then click Analyze.", "success");
+            } else if (res.status !== 401) {  // 401 is already handled by api()
+                const err = await res.json().catch(() => ({}));
+                showToast(err.detail || "Could not read this file", "error");
+            }
+        } catch (error) {
+            showToast("Network error while uploading the file", "error");
+        } finally {
+            uploadBtn.disabled = false;
+            uploadBtn.textContent = "Upload file";
+        }
+    });
 
     // Step 1: Analyze & Extract
     document.getElementById("analyze-btn").addEventListener("click", async () => {
@@ -413,6 +460,7 @@ document.addEventListener("DOMContentLoaded", () => {
         currentCorrelationId = null;
         extractedEntities = null;
         document.getElementById("report-input").value = "";
+        document.getElementById("report-file-name").textContent = FILE_HINT;
         document.getElementById("entities-display").innerHTML = '<p class="placeholder-text">Waiting for extraction...</p>';
         document.getElementById("threats-display").innerHTML = "";
         document.getElementById("summary-display").innerHTML = '<p class="placeholder-text">Waiting for synthesis...</p>';

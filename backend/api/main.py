@@ -1,3 +1,4 @@
+import hashlib
 import logging
 import math
 import os
@@ -5,7 +6,7 @@ import secrets
 import uuid
 from contextlib import asynccontextmanager
 from datetime import timezone
-from fastapi import FastAPI, Depends, HTTPException, Response, Request
+from fastapi import FastAPI, Depends, HTTPException, Response, Request, UploadFile, File
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
@@ -26,6 +27,9 @@ from backend.auth.login_limiter import LoginLimiter
 from backend.auth.sessions import SessionEndedError, check_session, revoke_token
 from backend.manage_users import create_initial_accounts
 from backend.audit.audit_service import log_action, get_audit_logs
+from backend.ingest.file_extractor import (
+    ALLOWED_EXTENSIONS, FileExtractionError, ReportTooLongError, extract_text, file_extension
+)
 from llm.gateway.adapters import GeminiGateway, OllamaGateway
 from llm.gateway.interface import LLMGatewayError, LLMTimeoutError
 from llm.gateway.ioc_extractor import extract_iocs
@@ -72,14 +76,52 @@ def _settings_warnings(db: Session) -> List[str]:
 
 app = FastAPI(title="UNICC Cyber AI Gateway", lifespan=lifespan)
 
-@app.middleware("http")
-async def limit_request_size(request: Request, call_next):
-    """Refuse oversized requests before reading them, so one huge upload can't exhaust memory."""
-    length = request.headers.get("content-length")
-    if length and length.isdigit() and int(length) > MAX_BODY_BYTES:
-        return JSONResponse(status_code=413, content={
-            "detail": f"Request too large (limit {MAX_BODY_BYTES // (1024 * 1024)} MB). Shorten the report or split it."})
-    return await call_next(request)
+def _size_limit(path: str):
+    """The largest request allowed on this address, and the message shown when it is exceeded."""
+    if path == UPLOAD_PATH:
+        return MAX_UPLOAD_BYTES + MULTIPART_OVERHEAD_BYTES, (
+            f"File too large (limit {MAX_UPLOAD_BYTES // (1024 * 1024)} MB). Split the report, or paste its text instead.")
+    return MAX_BODY_BYTES, (
+        f"Request too large (limit {MAX_BODY_BYTES // (1024 * 1024)} MB). Shorten the report or split it.")
+
+
+class LimitRequestSize:
+    """
+    Refuse oversized requests, so one huge upload can't fill the server's memory or disk.
+
+    Two checks, because a request can arrive in two ways:
+    - it announces its size up front (Content-Length): refused at once, before any of it is read;
+    - it arrives in pieces without announcing a size ("chunked"): the bytes are counted as they
+      arrive, and the request is stopped as soon as it goes over the limit. Checking only the
+      announced size would let such a request through at any size.
+    """
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+        limit, message = _size_limit(scope.get("path", ""))
+
+        length = dict(scope.get("headers") or []).get(b"content-length", b"")
+        if length.isdigit() and int(length) > limit:
+            return await JSONResponse(status_code=413, content={"detail": message})(scope, receive, send)
+
+        received = 0
+
+        async def counting_receive():
+            nonlocal received
+            event = await receive()
+            if event["type"] == "http.request":
+                received += len(event.get("body", b""))
+                if received > limit:
+                    raise HTTPException(status_code=413, detail=message)
+            return event
+
+        await self.app(scope, counting_receive, send)
+
+
+app.add_middleware(LimitRequestSize)
 
 
 @app.middleware("http")
@@ -251,7 +293,10 @@ MAX_EVIDENCE_CHARS = MAX_REPORT_CHARS + 20_000
 MAX_NOTES_CHARS = 5_000
 MAX_ENTITIES = 500
 MAX_ENTITY_CHARS = 512
-MAX_BODY_BYTES = 2 * 1024 * 1024    # 2 MB for any single request
+MAX_BODY_BYTES = 2 * 1024 * 1024    # 2 MB for any single request...
+MAX_UPLOAD_BYTES = 20 * 1024 * 1024  # ...except a report file: PDFs with pictures are often several MB
+MULTIPART_OVERHEAD_BYTES = 64 * 1024 # the few extra bytes a browser adds around an uploaded file
+UPLOAD_PATH = "/api/v1/investigation/upload"
 CORRELATION_ID = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9-]+$")
 
 # --- Pydantic Schemas ---
@@ -402,8 +447,66 @@ def api_update_config(req: ConfigUpdate, user: dict = Depends(get_admin_user), d
 def analyze_report(req: AnalyzeRequest, user: dict = Depends(get_investigator_user), db: Session = Depends(get_db)):
     # Simply generates a correlation_id and returns the text
     correlation_id = str(uuid.uuid4())
-    log_action(db, correlation_id, user["id"], user["role"], "upload_report", "doc_new", "none", "success")
+    # The fingerprint (hash) of the text links this investigation to an uploaded file's
+    # audit entry, without storing the report itself in the audit log.
+    log_action(db, correlation_id, user["id"], user["role"], "upload_report", "doc_new", "none", "success",
+               {"characters": len(req.report_text), "text_sha256": _sha256(req.report_text.encode("utf-8"))})
     return {"correlation_id": correlation_id, "text": req.report_text}
+
+
+def _sha256(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def _safe_filename(name: str) -> str:
+    """The file's name as the user's computer sent it: printable characters only, shortened."""
+    return "".join(ch for ch in (name or "") if ch.isprintable())[:128] or "(no name)"
+
+
+@app.post(UPLOAD_PATH)
+def upload_report_file(file: UploadFile = File(...), user: dict = Depends(get_investigator_user),
+                       db: Session = Depends(get_db)):
+    """
+    Read a report from an uploaded .txt, .pdf or .docx file and return its text.
+
+    It only returns the text: the dashboard puts it in the paste box, the investigator
+    can check or edit it, and the analysis starts the same way as for pasted text.
+    The file itself is not kept. Its name and fingerprints (hashes) go in the audit log.
+
+    (A plain "def", not "async def": reading a PDF takes real work, and FastAPI runs a
+    plain function in a separate thread, so other users are not kept waiting meanwhile.)
+    """
+    filename = _safe_filename(file.filename)
+    content = file.file.read(MAX_UPLOAD_BYTES + 1)
+    details = {"filename": filename, "file_bytes": len(content), "file_sha256": _sha256(content)}
+
+    def refuse(status: int, reason: str):
+        log_action(db, "upload", user["id"], user["role"], "upload_report_file", "doc_new", "none", "failure",
+                   {**details, "reason": reason[:256]})
+        raise HTTPException(status_code=status, detail=reason)
+
+    if len(content) > MAX_UPLOAD_BYTES:
+        refuse(413, f"File too large (limit {MAX_UPLOAD_BYTES // (1024 * 1024)} MB). "
+                    "Split the report, or paste its text instead.")
+    if file_extension(filename) not in ALLOWED_EXTENSIONS:
+        refuse(415, f"Files of type '{file_extension(filename) or 'unknown'}' can't be uploaded. "
+                    f"Accepted formats: {', '.join(sorted(ALLOWED_EXTENSIONS))}.")
+    try:
+        text = extract_text(filename, content, MAX_REPORT_CHARS)
+    except ReportTooLongError as e:
+        refuse(413, str(e))
+    except FileExtractionError as e:
+        refuse(400, str(e))
+    except Exception as e:
+        # A problem inside a file-reading library: the file is refused like any other
+        # unreadable file; the technical details go to the server log only.
+        ref = _new_error_reference()
+        _server_log.error(f"[error ref {ref}] Reading uploaded file failed: {type(e).__name__}: {e}")
+        refuse(400, f"This file could not be read. Reference: {ref}")
+
+    log_action(db, "upload", user["id"], user["role"], "upload_report_file", "doc_new", "none", "success",
+               {**details, "characters": len(text), "text_sha256": _sha256(text.encode("utf-8"))})
+    return {"text": text, "filename": filename, "characters": len(text)}
 
 @app.post("/api/v1/investigation/entities")
 def extract_entities(req: EntitiesRequest, user: dict = Depends(get_investigator_user),

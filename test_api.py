@@ -1,3 +1,4 @@
+import hashlib
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
@@ -710,3 +711,131 @@ def test_secure_cookie_setting(monkeypatch):
     monkeypatch.setenv("COOKIE_SECURE", "false")
     cookie = [c for c in _login("test_inv", "testpass").headers.get_list("set-cookie") if "access_token" in c][0]
     assert "Secure" not in cookie
+
+
+# ---------------------------------------------------------------------------
+# Ingest report: load the report from a file (.txt / .pdf / .docx)
+# ---------------------------------------------------------------------------
+import json as _json
+import os as _os
+
+from test_file_extractor import add_to_zip, make_docx, make_pdf
+
+UPLOAD = "/api/v1/investigation/upload"
+
+
+def _upload(name, content, username="test_inv"):
+    token = _login(username, "testpass").cookies.get("access_token")
+    return client.post(UPLOAD, cookies={"access_token": token}, files={"file": (name, content)})
+
+
+def _upload_audit_details(action):
+    db = TestingSessionLocal()
+    try:
+        return [_json.loads(e.details) for e in db.query(AuditLog).filter(AuditLog.action == action).all()]
+    finally:
+        db.close()
+
+
+def test_upload_returns_the_text_of_a_pdf():
+    res = _upload("report.pdf", make_pdf(["Host 10.14.6.23 beaconed to 185.220.101.47", "CVE-2023-23397"]))
+    assert res.status_code == 200
+    body = res.json()
+    assert "185.220.101.47" in body["text"] and "CVE-2023-23397" in body["text"]
+    assert body["filename"] == "report.pdf"
+    assert body["characters"] == len(body["text"])
+
+
+def test_uploaded_text_goes_through_the_same_analysis_as_pasted_text():
+    text = _upload("report.docx", make_docx(lambda d: d.add_paragraph("Beacon to 185.220.101.47"))).json()["text"]
+    token = _login("test_inv", "testpass").cookies.get("access_token")
+    started = client.post("/api/v1/investigation/analyze", cookies={"access_token": token}, json={"report_text": text})
+    assert started.status_code == 200
+    found = client.post("/api/v1/investigation/entities", cookies={"access_token": token},
+                        json={"report_text": text, "correlation_id": started.json()["correlation_id"]})
+    assert "185.220.101.47" in found.json()["iocs"]
+
+
+def test_upload_is_audited_and_linked_to_the_investigation():
+    content = b"CVE-2023-23397 was exploited."
+    text = _upload("report.txt", content).json()["text"]
+    token = _login("test_inv", "testpass").cookies.get("access_token")
+    client.post("/api/v1/investigation/analyze", cookies={"access_token": token}, json={"report_text": text})
+
+    [upload] = _upload_audit_details("upload_report_file")
+    assert upload["outcome"] == "success" and upload["filename"] == "report.txt"
+    assert upload["file_sha256"] == hashlib.sha256(content).hexdigest()
+    [analysis] = _upload_audit_details("upload_report")
+    # Same fingerprint = the investigation analysed exactly the text of that file, unedited.
+    assert analysis["text_sha256"] == upload["text_sha256"]
+    # The report itself is never copied into the audit log.
+    assert "CVE-2023-23397" not in _json.dumps(upload) + _json.dumps(analysis)
+
+
+def test_refused_upload_is_audited_with_the_reason():
+    res = _upload("malware.exe", b"MZ\x90\x00")
+    assert res.status_code == 415
+    assert "can't be uploaded" in res.json()["detail"]
+    [entry] = _upload_audit_details("upload_report_file")
+    assert entry["outcome"] == "failure" and "can't be uploaded" in entry["reason"]
+
+
+def test_unreadable_file_gets_a_clear_reason():
+    res = _upload("scan.txt", "café".encode("cp1252"))
+    assert res.status_code == 400
+    assert "UTF-8" in res.json()["detail"]
+
+
+def test_file_with_too_much_text_is_refused():
+    res = _upload("long.txt", b"A" * 200_001)
+    assert res.status_code == 413
+    assert "longer than 200,000 characters" in res.json()["detail"]
+
+
+def test_only_investigators_and_admins_can_upload():
+    db = TestingSessionLocal()
+    db.add(User(id="t3", username="test_aud", hashed_password=get_password_hash("testpass"), role="auditor"))
+    db.commit()
+    db.close()
+    assert _upload("report.txt", b"CVE-2023-23397", username="test_aud").status_code == 403
+    assert _upload("report.txt", b"CVE-2023-23397", username="test_admin").status_code == 200
+    client.cookies.clear()
+    assert client.post(UPLOAD, files={"file": ("report.txt", b"CVE-2023-23397")}).status_code == 401
+
+
+def test_upload_allows_files_larger_than_other_requests():
+    # Reports with pictures are often bigger than the 2 MB allowed for other requests.
+    pictures = _os.urandom(3 * 1024 * 1024)
+    report = add_to_zip(make_docx(lambda d: d.add_paragraph("CVE-2023-23397")), "word/media/image1.png",
+                        pictures, compress=False)
+    res = _upload("report.docx", report)
+    assert res.status_code == 200
+    assert res.json()["text"] == "CVE-2023-23397"
+
+
+def test_upload_over_20_mb_is_refused_before_reading():
+    res = _upload("huge.pdf", b"%PDF-1.4\n" + b"0" * (21 * 1024 * 1024))
+    assert res.status_code == 413
+    assert "File too large (limit 20 MB)" in res.json()["detail"]
+
+
+def test_request_without_a_declared_size_is_still_limited():
+    # The bug this guards against: only the size a request ANNOUNCES was checked, so
+    # a request sent in pieces ("chunked", no announced size) could be of any size.
+    token = _login("test_inv", "testpass").cookies.get("access_token")
+
+    def pieces():
+        yield b'{"report_text": "'
+        for _ in range(3):
+            yield b"A" * (1024 * 1024)
+        yield b'"}'
+
+    res = client.post("/api/v1/investigation/analyze", cookies={"access_token": token},
+                      content=pieces(), headers={"Content-Type": "application/json"})
+    assert res.status_code == 413
+    assert "Request too large" in res.json()["detail"]
+
+
+def test_dashboard_has_an_upload_button():
+    page = client.get("/").text
+    assert 'id="upload-file-btn"' in page and 'accept=".txt,.pdf,.docx"' in page
