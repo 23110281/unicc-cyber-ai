@@ -1,4 +1,29 @@
 document.addEventListener("DOMContentLoaded", () => {
+    // ------------------------------------------------------------------
+    // Safe display helpers.
+    // Anything that comes from a report or from the AI is shown as PLAIN TEXT
+    // (textContent), never inserted as page code (innerHTML). A report - or an
+    // AI tricked by a report - could otherwise put code into the investigator's
+    // browser (this attack is called XSS).
+    // ------------------------------------------------------------------
+    function textElement(tag, text, className) {
+        const el = document.createElement(tag);
+        el.textContent = text;
+        if (className) el.className = className;
+        return el;
+    }
+
+    function textList(items) {
+        const list = document.createElement("ul");
+        items.forEach(item => list.appendChild(textElement("li", String(item))));
+        return list;
+    }
+
+    function showInBox(boxId, ...children) {
+        const box = document.getElementById(boxId);
+        box.replaceChildren(...children);
+    }
+
     // Check auth status
     const isLoggedIn = document.cookie.includes("access_token");
     let currentRole = localStorage.getItem("userRole");
@@ -98,16 +123,13 @@ document.addEventListener("DOMContentLoaded", () => {
                 const entitiesData = await res.json();
                 extractedEntities = entitiesData.iocs;
                 
-                let html = `<strong>Extracted IOCs:</strong>`;
+                const title = textElement("strong", "Extracted IOCs:");
                 if (entitiesData.iocs.length === 0) {
-                    html += `<p class="placeholder-text">No indicators (CVEs, IPs, domains, hashes) found in this report.</p>`;
+                    showInBox("entities-display", title,
+                        textElement("p", "No indicators (CVEs, IPs, domains, hashes) found in this report.", "placeholder-text"));
                 } else {
-                    html += `<ul>`;
-                    entitiesData.iocs.forEach(ioc => html += `<li>${ioc}</li>`);
-                    html += `</ul>`;
+                    showInBox("entities-display", title, textList(entitiesData.iocs));
                 }
-                
-                document.getElementById("entities-display").innerHTML = html;
                 document.getElementById("step-2").classList.remove("disabled");
                 document.getElementById("threat-match-btn").disabled = false;
                 showToast("Extraction complete", "success");
@@ -190,12 +212,12 @@ document.addEventListener("DOMContentLoaded", () => {
 
             if (res.ok) {
                 const data = await res.json();
-                let html = `<strong>Summary:</strong><p>${data.summary.replace(/\n/g, '<br>')}</p>`;
-                html += `<strong>Key Points:</strong><ul>`;
-                data.key_points.forEach(kp => html += `<li>${kp}</li>`);
-                html += `</ul>`;
-                
-                document.getElementById("summary-display").innerHTML = html;
+                // The AI's answer is shown as plain text; line breaks are kept by CSS.
+                showInBox("summary-display",
+                    textElement("strong", "Summary:"),
+                    textElement("p", data.summary, "ai-text"),
+                    textElement("strong", "Key Points:"),
+                    textList(data.key_points || []));
                 document.getElementById("step-3").classList.remove("disabled");
                 showToast("Synthesis complete", "success");
             } else {

@@ -50,6 +50,26 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="UNICC Cyber AI Gateway", lifespan=lifespan)
 
+@app.middleware("http")
+async def set_cache_rules(request: Request, call_next):
+    """
+    Tell browsers how to cache what we send.
+
+    - API answers (/api/...) contain investigation data and audit logs:
+      "no-store" means the browser must never keep a copy on disk.
+    - Dashboard files (index.html, app.js, style.css): "no-cache" means the
+      browser may keep a copy but must ask the server before each use. The
+      server answers "not changed" (304) when it is still current, so this is
+      cheap - and after an update every user gets the new version at once.
+    """
+    response = await call_next(request)
+    if request.url.path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-store"
+    else:
+        response.headers.setdefault("Cache-Control", "no-cache")
+    return response
+
+
 # Which OTHER websites may call this API from a user's browser (CORS).
 # The dashboard is served by this same app, so it needs no permission, and by
 # default NO other website is allowed. If the dashboard is ever hosted at a

@@ -280,6 +280,12 @@ textarea {
     border: 1px solid var(--panel-border);
 }
 
+/* AI answers are inserted as plain text; this keeps their line breaks. */
+.ai-text {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
 .placeholder-text {
     color: var(--text-secondary);
     font-style: italic;

@@ -448,3 +448,24 @@ def test_audit_page_shows_usernames():
     entries = client.get("/api/v1/admin/audit-logs", cookies={"access_token": token}).json()
     login_entry = next(e for e in entries if e["action"] == "login")
     assert login_entry["username"] == "test_admin"
+
+
+# ---------------------------------------------------------------------------
+# Browser caching rules
+# ---------------------------------------------------------------------------
+def test_dashboard_files_are_rechecked_by_browsers():
+    # The bug this guards against: browsers kept using an old app.js after an update.
+    for path in ["/", "/app.js", "/style.css"]:
+        res = client.get(path)
+        assert res.status_code == 200
+        assert res.headers.get("cache-control") == "no-cache", path
+
+
+def test_api_answers_are_never_stored_by_browsers():
+    res = _login("test_inv", "testpass")
+    assert res.headers.get("cache-control") == "no-store"
+    token = res.cookies.get("access_token")
+    res2 = client.post("/api/v1/investigation/entities",
+                       json={"report_text": "CVE-2023-23397", "correlation_id": "c"},
+                       cookies={"access_token": token})
+    assert res2.headers.get("cache-control") == "no-store"
