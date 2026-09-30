@@ -909,3 +909,13 @@ def test_dashboard_files_have_the_right_type_even_if_windows_says_otherwise():
     assert client.get("/app.js").headers["content-type"].startswith("text/javascript")
     assert client.get("/style.css").headers["content-type"].startswith("text/css")
     assert client.get("/").headers["content-type"].startswith("text/html")
+
+
+def test_page_asks_for_fresh_copies_of_its_files_after_the_windows_fix():
+    # Browsers that opened an older version on Windows saved app.js labelled as
+    # plain text, and kept refusing to run it after the fix (login did nothing
+    # until Ctrl+Shift+R). New file names make every browser download them fresh.
+    page = client.get("/").text
+    assert 'src="app.js?v=2"' in page and 'href="style.css?v=2"' in page
+    assert client.get("/app.js?v=2").headers["content-type"].startswith("text/javascript")
+    assert client.get("/style.css?v=2").headers["content-type"].startswith("text/css")

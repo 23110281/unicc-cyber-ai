@@ -4,7 +4,10 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>UNICC Cyber AI Gateway</title>
-    <link rel="stylesheet" href="style.css">
+    <!-- "?v=2" gives these files a name no browser has saved yet, so after this update every
+         browser downloads them fresh. (Browsers that opened an older version on Windows had
+         saved app.js with the wrong file type, and kept refusing to run it.) -->
+    <link rel="stylesheet" href="style.css?v=2">
 </head>
 <body>
     <div id="app">
@@ -135,6 +138,6 @@
     
     <div id="toast-container"></div>
 
-    <script src="app.js"></script>
+    <script src="app.js?v=2"></script>
 </body>
 </html>
