@@ -40,6 +40,10 @@ document.addEventListener("DOMContentLoaded", () => {
         currentRole = null;
         showView("login-view");
         resetWorkflow();
+        // Remove anything the previous user loaded, so the next person who logs in
+        // on this browser tab can't read it in the page (e.g. with F12) - even if
+        // their role may not see it.
+        document.querySelector("#audit-table tbody").replaceChildren();
         document.getElementById("login-error").textContent = message || "";
     }
 
