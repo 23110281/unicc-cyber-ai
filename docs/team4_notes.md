@@ -1,3 +1,8 @@
+> **Historical notes (August 2026).** These were written during the first exploration of the
+> project and are **out of date** (for example, `llm/gateway/interface.py` is no longer empty,
+> and the authentication questions below have been answered in the code).
+> For the current state, setup and design, see the [README](../README.md).
+
 # Team 4 (Application, Security & Deployment) - Initial Exploration Notes
 
 ## 1. Summary of Findings

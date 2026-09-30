@@ -1,13 +1,27 @@
 import os
+import re
 import requests
 import json
 import time
 from .interface import LLMInterface, LLMTimeoutError, LLMGatewayError
+from .ioc_extractor import extract_iocs
+
+# Model names go into a web address, so only simple names are accepted.
+_MODEL_NAME = re.compile(r"^[A-Za-z0-9._:-]{1,100}$")
+
+
+def _checked_model(name: str, setting: str) -> str:
+    if not _MODEL_NAME.match(name):
+        raise LLMGatewayError(f"Setting {setting} is not a valid model name.")
+    return name
+
 
 class OllamaGateway(LLMInterface):
-    def __init__(self, host="http://localhost:11434", model="tinyllama"):
-        self.host = host
-        self.model = model
+    """On-premise AI through Ollama. Settings: OLLAMA_HOST, OLLAMA_MODEL (see .env.example)."""
+
+    def __init__(self, host=None, model=None):
+        self.host = (host or os.environ.get("OLLAMA_HOST") or "http://localhost:11434").rstrip("/")
+        self.model = _checked_model(model or os.environ.get("OLLAMA_MODEL") or "tinyllama", "OLLAMA_MODEL")
         self.verify_model()
         
     def verify_model(self):
@@ -47,8 +61,8 @@ class OllamaGateway(LLMInterface):
                 raise LLMGatewayError("Ollama returned invalid JSON format.")
                 
         except requests.exceptions.Timeout:
-            raise LLMTimeoutError(f"Ollama request timed out.")
-        except requests.exceptions.HTTPError as e:
+            raise LLMTimeoutError("Ollama request timed out.")
+        except requests.exceptions.HTTPError:
             if resp.status_code == 429:
                 raise LLMGatewayError("Ollama Rate Limit Exceeded (429)")
             raise LLMGatewayError(f"Ollama HTTP error {resp.status_code}: {resp.text}")
@@ -76,17 +90,8 @@ class OllamaGateway(LLMInterface):
         }
         
     def extract_entities(self, text: str, config: dict = None) -> dict:
-        raw_text = self._call(f"Extract IOCs from this text:\n{text}", config)
-        return {
-            "iocs": [
-                "CVE-2023-1234",
-                "192.168.1.100",
-                "malicious.com",
-                "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-                "RansomwareX",
-                "Lazarus Group"
-            ]
-        }
+        # Find indicators that are actually written in the text (never invented).
+        return extract_iocs(text)
         
     def investigate_synthesis(self, query: str, retrieved_evidence: list, config: dict = None) -> dict:
         ev_text = json.dumps(retrieved_evidence)
@@ -95,11 +100,17 @@ class OllamaGateway(LLMInterface):
 
 
 class GeminiGateway(LLMInterface):
+    """API-based AI through Google Gemini. Settings: GEMINI_API_KEY, GEMINI_MODEL (see .env.example)."""
+
     def __init__(self):
         self.api_key = os.environ.get("GEMINI_API_KEY", "")
-        self.url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent"
+        self.model = _checked_model(os.environ.get("GEMINI_MODEL") or "gemini-3.6-flash", "GEMINI_MODEL")
+        self.url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:generateContent"
         
     def _call(self, prompt: str, config: dict = None) -> str:
+        if not self.api_key:
+            raise LLMGatewayError("Gemini API key is not set (GEMINI_API_KEY), so the AI model could not be reached.")
+
         config = config or {}
         timeout = config.get("timeout", 60)
         max_retries = config.get("max_retries", 3)
@@ -139,7 +150,7 @@ class GeminiGateway(LLMInterface):
                 
             except requests.exceptions.Timeout:
                 if attempt == max_retries - 1:
-                    raise LLMTimeoutError(f"Gemini request timed out.")
+                    raise LLMTimeoutError("Gemini request timed out.")
                 print(f"INFO: Gemini request timed out. Retrying attempt {attempt+1}/{max_retries}...")
                 time.sleep(2 ** attempt)
             except requests.exceptions.RequestException as e:
@@ -159,39 +170,18 @@ class GeminiGateway(LLMInterface):
         if not text.strip():
             raise LLMGatewayError("Empty input provided for summarization.")
             
-        try:
-            raw_text = self._call(f"Summarize this report and provide bullet points:\n{text}", config)
-            return {
-                "summary": raw_text.strip(), 
-                "key_points": self._parse_key_points(raw_text)
-            }
-        except Exception as e:
-            print(f"INFO: API failed during summarize_report, falling back to mock: {e}")
-            return {
-                "summary": "Mock Summary: The provided report outlines a suspected ransomware incident involving Cobalt Strike and lateral movement.",
-                "key_points": ["Anomalous outbound traffic detected", "Cobalt Strike payload delivered via phishing", "CVE-2023-23397 exploited", "Possible ransomware pre-deployment reconnaissance"]
-            }
+        # If the AI call fails, the error is passed on to the caller.
+        # We never replace a failed answer with a made-up one: an investigator
+        # must be able to tell "the AI said X" apart from "the AI didn't answer".
+        raw_text = self._call(f"Summarize this report and provide bullet points:\n{text}", config)
+        return {
+            "summary": raw_text.strip(),
+            "key_points": self._parse_key_points(raw_text)
+        }
         
     def extract_entities(self, text: str, config: dict = None) -> dict:
-        try:
-            raw_text = self._call(f"Extract IOCs from this text:\n{text}", config)
-        except Exception as e:
-            print(f"INFO: API failed during extract_entities, falling back to mock: {e}")
-            
-        return {
-            "iocs": [
-                "CVE-2023-23397",
-                "10.14.6.23",
-                "secure-update-cdn[.]net",
-                "185.220.101.47",
-                "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b85",
-                "10.14.0.5",
-                "FIN12",
-                "45.134.26.201",
-                "IcedID",
-                "Cobalt Strike"
-            ]
-        }
+        # Find indicators that are actually written in the text (never invented).
+        return extract_iocs(text)
         
     def investigate_synthesis(self, query: str, retrieved_evidence: list, config: dict = None) -> dict:
         ev_text = json.dumps(retrieved_evidence)

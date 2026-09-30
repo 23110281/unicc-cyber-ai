@@ -4,9 +4,8 @@ Handles immutable, secure audit logging with correlation ID linking.
 Now database-backed.
 """
 import json
-from datetime import datetime
 from sqlalchemy.orm import Session
-from backend.models import AuditLog
+from backend.models import AuditLog, utc_now
 
 def log_action(db: Session, correlation_id: str, user_id: str, role: str, action: str, 
                resource_id: str, llm_backend_used: str, outcome: str, details: dict = None):
@@ -39,7 +38,7 @@ def log_action(db: Session, correlation_id: str, user_id: str, role: str, action
     }
     
     audit_entry = AuditLog(
-        timestamp=datetime.utcnow(),
+        timestamp=utc_now(),  # stored in UTC
         action=action,
         user=user_id,
         role=role,

@@ -1,0 +1,15 @@
+# ---- Python's auto-generated cache files ----
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# ---- Virtual environments (your personal Python setup) ----
+.venv/
+venv/
+
+# ---- Secrets: API keys, passwords. NEVER upload these ----
+.env
+
+# ---- Files the app creates by itself while running ----
+backend/app.db
+*.log
