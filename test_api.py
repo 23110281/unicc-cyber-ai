@@ -895,3 +895,27 @@ def test_dashboard_has_no_code_the_security_rules_would_block():
     script = client.get("/app.js").text
     assert "eval(" not in script and "new Function" not in script
     assert not _re.search(r"setAttribute\(\s*[\"']style", script)
+
+
+def test_dashboard_files_have_the_right_type_even_if_windows_says_otherwise():
+    # The bug this guards against: on many Windows PCs the registry says
+    # ".js = text/plain". With the nosniff rule, Chrome then refused to run
+    # app.js, and the login page just reloaded without logging in.
+    import mimetypes
+    from backend.api.main import set_file_types
+    mimetypes.add_type("text/plain", ".js")        # what those Windows PCs report
+    mimetypes.add_type("text/plain", ".css")
+    set_file_types()                               # what the app does when it starts
+    assert client.get("/app.js").headers["content-type"].startswith("text/javascript")
+    assert client.get("/style.css").headers["content-type"].startswith("text/css")
+    assert client.get("/").headers["content-type"].startswith("text/html")
+
+
+def test_page_asks_for_fresh_copies_of_its_files_after_the_windows_fix():
+    # Browsers that opened an older version on Windows saved app.js labelled as
+    # plain text, and kept refusing to run it after the fix (login did nothing
+    # until Ctrl+Shift+R). New file names make every browser download them fresh.
+    page = client.get("/").text
+    assert 'src="app.js?v=2"' in page and 'href="style.css?v=2"' in page
+    assert client.get("/app.js?v=2").headers["content-type"].startswith("text/javascript")
+    assert client.get("/style.css?v=2").headers["content-type"].startswith("text/css")
