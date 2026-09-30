@@ -1,6 +1,7 @@
 import hashlib
 import logging
 import math
+import mimetypes
 import os
 import secrets
 import uuid
@@ -616,4 +617,21 @@ def final_decision(req: DecisionRequest, user: dict = Depends(get_investigator_u
     return {"message": "Decision recorded"}
 
 # Serve frontend static files
+
+def set_file_types():
+    """
+    Label the dashboard files with their correct types, whatever the computer says.
+
+    The file server asks the operating system what type a file is. On Windows that
+    answer comes from the registry, and on many PCs it says ".js = text/plain".
+    Because of the X-Content-Type-Options: nosniff rule, the browser then refuses
+    to run app.js at all - the login page just reloads. So the app sets the types
+    itself instead of trusting the computer's settings.
+    """
+    mimetypes.add_type("text/html", ".html")
+    mimetypes.add_type("text/css", ".css")
+    mimetypes.add_type("text/javascript", ".js")
+
+
+set_file_types()
 app.mount("/", StaticFiles(directory="frontend", html=True), name="frontend")
